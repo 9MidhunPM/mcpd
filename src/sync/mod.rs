@@ -16,7 +16,7 @@ use crate::{
     diagnostics::{McpdError, Result},
     model::CanonicalConfig,
     state::{self, TargetState},
-    targets::{TargetAdapter, TargetPlan, codex::CodexAdapter},
+    targets::{self, TargetPlan},
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,29 +27,18 @@ pub struct SyncReport {
     pub changes: Vec<crate::targets::Change>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnabledTarget {
-    Codex,
-}
-
-pub fn enabled_targets(config: &CanonicalConfig) -> Vec<EnabledTarget> {
-    let mut targets = Vec::new();
-    if config
-        .targets
-        .get("codex")
-        .is_some_and(|target| target.enabled)
-    {
-        targets.push(EnabledTarget::Codex);
-    }
-    targets
+pub fn enabled_targets(config: &CanonicalConfig) -> Vec<&'static str> {
+    targets::TARGET_IDS
+        .iter()
+        .copied()
+        .filter(|id| config.targets.get(*id).is_some_and(|target| target.enabled))
+        .collect()
 }
 
 pub fn plan_enabled_targets(config: &CanonicalConfig, paths: &Paths) -> Result<Vec<TargetPlan>> {
     enabled_targets(config)
         .into_iter()
-        .map(|target| match target {
-            EnabledTarget::Codex => plan_codex(config, paths),
-        })
+        .map(|target| plan_target(target, config, paths))
         .collect()
 }
 
@@ -60,9 +49,7 @@ pub fn sync_enabled_targets(
 ) -> Result<Vec<SyncReport>> {
     enabled_targets(config)
         .into_iter()
-        .map(|target| match target {
-            EnabledTarget::Codex => sync_codex(config, paths, dry_run),
-        })
+        .map(|target| sync_target(target, config, paths, dry_run))
         .collect()
 }
 
@@ -76,22 +63,27 @@ struct PendingTransaction {
     next_state: TargetState,
 }
 
-fn plan_codex(config: &CanonicalConfig, paths: &Paths) -> Result<TargetPlan> {
+fn plan_target(target: &str, config: &CanonicalConfig, paths: &Paths) -> Result<TargetPlan> {
     let state_path = paths.state_dir.join("state.toml");
     let state = state::load(&state_path)?;
-    let adapter = CodexAdapter::new(paths.codex_config.clone(), paths.home.clone());
+    let adapter = targets::adapter(target, paths)?;
     adapter.plan(config, state.targets.get(adapter.id()))
 }
 
-fn sync_codex(config: &CanonicalConfig, paths: &Paths, dry_run: bool) -> Result<SyncReport> {
+fn sync_target(
+    target: &str,
+    config: &CanonicalConfig,
+    paths: &Paths,
+    dry_run: bool,
+) -> Result<SyncReport> {
     if dry_run {
-        let plan = plan_codex(config, paths)?;
+        let plan = plan_target(target, config, paths)?;
         return Ok(report(&plan, true));
     }
     with_sync_lock(paths, || {
         let state_path = paths.state_dir.join("state.toml");
         let mut state_file = state::load(&state_path)?;
-        let adapter = CodexAdapter::new(paths.codex_config.clone(), paths.home.clone());
+        let adapter = targets::adapter(target, paths)?;
         let mut plan = adapter.plan(config, state_file.targets.get(adapter.id()))?;
         if plan.is_noop() {
             return Ok(report(&plan, false));
@@ -163,7 +155,7 @@ fn backup(plan: &TargetPlan, state_dir: &Path) -> Result<()> {
     let stamp = now_ms()?;
     let mut selected = None;
     for suffix in 0..100_u8 {
-        let path = dir.join(format!("{stamp}-{suffix:02}-config.toml"));
+        let path = dir.join(format!("{stamp}-{suffix:02}-config.backup"));
         let mut options = stdfs::OpenOptions::new();
         options.create_new(true).write(true).mode(0o600);
         match options.open(&path) {
@@ -208,7 +200,7 @@ pub(crate) fn ensure_private_dir(path: &Path) -> Result<()> {
 }
 
 fn pending_path(paths: &Paths) -> PathBuf {
-    paths.state_dir.join("pending-codex.toml")
+    paths.state_dir.join("pending-sync.toml")
 }
 
 fn save_pending(paths: &Paths, pending: &PendingTransaction) -> Result<()> {
@@ -243,7 +235,7 @@ fn recover_pending(paths: &Paths) -> Result<()> {
             hint: "inspect the target and state before removing the pending transaction manually"
                 .into(),
         })?;
-    if pending.version != 1 || pending.target != "codex" {
+    if pending.version != 1 || !targets::TARGET_IDS.contains(&pending.target.as_str()) {
         return Err(McpdError::InvalidInput {
             message: "unsupported pending transaction record".into(),
             hint: "use a compatible mcpd version".into(),
@@ -259,14 +251,18 @@ fn recover_pending(paths: &Paths) -> Result<()> {
         let mut state_file = state::load(&state_path)?;
         state_file
             .targets
-            .insert("codex".into(), pending.next_state);
+            .insert(pending.target.clone(), pending.next_state);
         state::save(&state_path, &state_file)?;
         remove_pending(paths)
     } else if current == pending.pre_hash {
         remove_pending(paths)
     } else {
         Err(McpdError::Conflict {
-            message: format!("Codex config changed during recovery of {}", path.display()),
+            message: format!(
+                "{} config changed during recovery of {}",
+                targets::display_name(&pending.target),
+                path.display()
+            ),
             hint: "inspect the target and backup; mcpd will not guess which version to own".into(),
         })
     }

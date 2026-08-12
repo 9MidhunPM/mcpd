@@ -1,4 +1,5 @@
 pub mod codex;
+pub mod json;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -43,11 +44,24 @@ pub struct ImportedServer {
     pub ownership: ManagedServer,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ImportSkipped {
+    pub name: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportMode {
+    Strict,
+    BestEffort,
+}
+
 pub struct TargetImport {
     pub target: &'static str,
     pub path: PathBuf,
     pub snapshot: Vec<u8>,
     pub servers: BTreeMap<String, ImportedServer>,
+    pub skipped: Vec<ImportSkipped>,
     pub secret_writes: Vec<crate::secrets::SecretWrite>,
 }
 
@@ -110,9 +124,12 @@ pub trait TargetAdapter {
         &self,
         selection: Option<&BTreeSet<String>>,
         secret_mappings: &BTreeMap<String, String>,
+        mode: ImportMode,
     ) -> Result<TargetImport>;
     fn plan(&self, desired: &CanonicalConfig, state: Option<&TargetState>) -> Result<TargetPlan>;
 }
+
+pub const TARGET_IDS: &[&str] = &["claude", "cursor", "codex", "antigravity", "openchamber"];
 
 pub fn adapter(id: &str, paths: &Paths) -> Result<Box<dyn TargetAdapter>> {
     match id {
@@ -120,10 +137,28 @@ pub fn adapter(id: &str, paths: &Paths) -> Result<Box<dyn TargetAdapter>> {
             paths.codex_config.clone(),
             paths.home.clone(),
         ))),
+        "claude" | "cursor" | "antigravity" | "openchamber" => {
+            Ok(Box::new(json::JsonAdapter::new(id, paths)?))
+        }
         _ => Err(McpdError::TargetUnavailable {
             target: id.into(),
             message: "no built-in adapter is available in this milestone".into(),
-            hint: "supported target: codex".into(),
+            hint: format!("supported targets: {}", TARGET_IDS.join(", ")),
         }),
+    }
+}
+
+pub fn adapters(paths: &Paths) -> Result<Vec<Box<dyn TargetAdapter>>> {
+    TARGET_IDS.iter().map(|id| adapter(id, paths)).collect()
+}
+
+pub fn display_name(id: &str) -> &str {
+    match id {
+        "claude" => "Claude Code",
+        "cursor" => "Cursor",
+        "codex" => "Codex",
+        "antigravity" => "Antigravity",
+        "openchamber" => "OpenChamber",
+        other => other,
     }
 }

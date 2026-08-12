@@ -15,7 +15,8 @@ pub fn ensure_safe_target_path(path: &Path, home: &Path) -> Result<()> {
     let relative = path.strip_prefix(home).map_err(|_| McpdError::Security {
         path: path.to_path_buf(),
         message: format!("target is outside home directory {}", home.display()),
-        hint: "mcpd 0.1 only writes the user-level Codex configuration below HOME".into(),
+        hint: "mcpd only writes target configuration below its approved user configuration root"
+            .into(),
     })?;
     let mut current = home.to_path_buf();
     for component in relative.components() {

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use serde::Serialize;
 use url::Url;
 
@@ -9,8 +10,7 @@ use crate::{
     diagnostics::{McpdError, Result},
     import,
     model::Server,
-    output, sync,
-    targets::{self, TargetAdapter, codex::CodexAdapter},
+    output, sync, targets,
 };
 
 #[derive(Debug, Parser)]
@@ -40,6 +40,10 @@ enum Command {
         no_sync: bool,
     },
     List,
+    Get {
+        #[arg(value_parser = config::parse_server_id)]
+        name: String,
+    },
     Targets {
         #[command(subcommand)]
         command: Option<TargetCommand>,
@@ -66,6 +70,25 @@ enum Command {
     },
     /// Check canonical secret references without revealing their values.
     Doctor,
+    Status,
+    /// Watch canonical configuration and synchronize enabled targets after a debounce.
+    Watch,
+    /// Manage the optional user-level systemd watch service.
+    Systemd {
+        #[command(subcommand)]
+        command: SystemdCommand,
+    },
+    /// Generate shell completion scripts on stdout.
+    Completions {
+        shell: Shell,
+    },
+    Version,
+}
+
+#[derive(Debug, Subcommand)]
+enum SystemdCommand {
+    Install,
+    Uninstall,
     Status,
 }
 
@@ -131,6 +154,9 @@ struct ImportCommand {
     all: bool,
     #[arg(long)]
     dry_run: bool,
+    /// Abort an --all import if any selected server cannot be imported safely.
+    #[arg(long)]
+    strict: bool,
     #[arg(long = "secret", value_name = "FIELD=KEYRING_NAME", value_parser = parse_secret_mapping)]
     secrets: Vec<(String, String)>,
 }
@@ -214,31 +240,61 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 Ok(())
             }
         }
+        Command::Get { name } => {
+            let canonical = config::load(&paths.config)?;
+            let server = canonical
+                .servers
+                .get(name)
+                .ok_or_else(|| McpdError::InvalidInput {
+                    message: format!("server `{name}` does not exist"),
+                    hint: "run `mcpd list` to see canonical servers".into(),
+                })?;
+            if cli.json {
+                output::json(server)
+            } else if cli.quiet {
+                Ok(())
+            } else {
+                println!(
+                    "{}",
+                    toml::to_string_pretty(server).map_err(|error| McpdError::Operational {
+                        message: format!("could not render server: {error}"),
+                        hint: "report this as an mcpd bug".into(),
+                    })?
+                );
+                Ok(())
+            }
+        }
         Command::Targets { command } => match command {
             Some(TargetCommand::Enable { target }) => target_enabled(&cli, &paths, target, true),
             Some(TargetCommand::Disable { target }) => target_enabled(&cli, &paths, target, false),
             None => {
                 let canonical = config::load(&paths.config)?;
-                let adapter = CodexAdapter::new(paths.codex_config, paths.home);
-                let row = serde_json::json!({"id":"codex", "detected":adapter.detect(), "enabled":canonical.targets.get("codex").is_some_and(|v| v.enabled)});
+                let rows = targets::adapters(&paths)?.into_iter().map(|adapter| serde_json::json!({"id":adapter.id(), "detected":adapter.detect(), "enabled":canonical.targets.get(adapter.id()).is_some_and(|v| v.enabled)})).collect::<Vec<_>>();
                 if cli.json {
-                    output::json(&row)
+                    output::json(&rows)
                 } else if cli.quiet {
                     Ok(())
                 } else {
-                    println!(
-                        "{}\tCodex\t{}",
-                        if adapter.detect() {
-                            "installed"
-                        } else {
-                            "not detected"
-                        },
-                        if canonical.targets.get("codex").is_some_and(|v| v.enabled) {
-                            "enabled"
-                        } else {
-                            "disabled"
-                        }
-                    );
+                    for adapter in targets::adapters(&paths)? {
+                        println!(
+                            "{}\t{}\t{}",
+                            if adapter.detect() {
+                                "installed"
+                            } else {
+                                "not detected"
+                            },
+                            target_display_name(adapter.id()),
+                            if canonical
+                                .targets
+                                .get(adapter.id())
+                                .is_some_and(|v| v.enabled)
+                            {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            }
+                        );
+                    }
                     Ok(())
                 }
             }
@@ -303,6 +359,7 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 selection,
                 &paths,
                 command.dry_run,
+                command.strict,
                 mappings,
             )?;
             render_import_report(&cli, &report)
@@ -312,54 +369,50 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
         Command::Doctor => run_doctor(&cli, &paths),
         Command::Status => {
             let canonical = config::load(&paths.config)?;
-            let adapter = targets::adapter("codex", &paths)?;
-            let detected = adapter.detect();
-            let enabled = canonical
-                .targets
-                .get("codex")
-                .is_some_and(|value| value.enabled);
-            let names = adapter.server_names()?;
             let state_file = crate::state::load(&paths.state_dir.join("state.toml"))?;
-            let managed_names = state_file
-                .targets
-                .get("codex")
-                .filter(|state| {
-                    state.config_path == adapter.config_path()
-                        && state.adapter_version == adapter.adapter_version()
-                })
-                .map(|state| state.managed.keys().collect::<BTreeSet<_>>())
-                .unwrap_or_default();
-            let managed = managed_names.len();
-            let unmanaged = names
-                .iter()
-                .filter(|name| !managed_names.contains(name))
-                .count();
-            let pending = if enabled {
-                sync::plan_enabled_targets(&canonical, &paths)?
-                    .into_iter()
-                    .find(|plan| plan.target == "codex")
-                    .map_or(0, |plan| plan.changes.len())
-            } else {
-                0
-            };
-            let target_status = TargetStatus {
-                target: "codex",
-                detected,
-                enabled,
-                status: if !enabled {
-                    "disabled"
-                } else if pending == 0 {
-                    "synced"
-                } else {
-                    "drifted"
-                },
-                managed,
-                unmanaged,
-                pending,
-            };
+            let plans = sync::plan_enabled_targets(&canonical, &paths)?;
+            let mut target_rows = Vec::new();
+            for adapter in targets::adapters(&paths)? {
+                let enabled = canonical
+                    .targets
+                    .get(adapter.id())
+                    .is_some_and(|v| v.enabled);
+                let names = adapter.server_names()?;
+                let managed_names = state_file
+                    .targets
+                    .get(adapter.id())
+                    .filter(|state| {
+                        state.config_path == adapter.config_path()
+                            && state.adapter_version == adapter.adapter_version()
+                    })
+                    .map(|state| state.managed.keys().collect::<BTreeSet<_>>())
+                    .unwrap_or_default();
+                let pending = plans
+                    .iter()
+                    .find(|plan| plan.target == adapter.id())
+                    .map_or(0, |plan| plan.changes.len());
+                target_rows.push(TargetStatus {
+                    target: adapter.id(),
+                    detected: adapter.detect(),
+                    enabled,
+                    status: if !enabled {
+                        "disabled"
+                    } else if pending == 0 {
+                        "synced"
+                    } else {
+                        "drifted"
+                    },
+                    managed: managed_names.len(),
+                    unmanaged: names
+                        .iter()
+                        .filter(|name| !managed_names.contains(name))
+                        .count(),
+                    pending,
+                });
+            }
             let status = StatusOutput {
                 canonical_servers: canonical.servers.len(),
-                targets: vec![target_status],
+                targets: target_rows,
             };
             if cli.json {
                 output::json(&status)
@@ -385,6 +438,52 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 Ok(())
             }
         }
+        Command::Watch => crate::watch::run(&paths),
+        Command::Systemd { command } => match command {
+            SystemdCommand::Install => {
+                let path = crate::systemd::install(&paths)?;
+                crate::systemd::reload_user_manager()?;
+                message(
+                    &cli,
+                    format!(
+                        "installed user service {}\nRun `systemctl --user enable --now mcpd-watch.service` to start it.",
+                        path.display()
+                    ),
+                )
+            }
+            SystemdCommand::Uninstall => {
+                let removed = crate::systemd::uninstall(&paths)?;
+                crate::systemd::reload_user_manager()?;
+                message(
+                    &cli,
+                    if removed {
+                        "uninstalled mcpd user service".into()
+                    } else {
+                        "mcpd user service is not installed".into()
+                    },
+                )
+            }
+            SystemdCommand::Status => {
+                let (path, installed) = crate::systemd::status(&paths)?;
+                message(
+                    &cli,
+                    format!(
+                        "{}\t{}",
+                        if installed {
+                            "installed"
+                        } else {
+                            "not installed"
+                        },
+                        path.display()
+                    ),
+                )
+            }
+        },
+        Command::Completions { shell } => {
+            clap_complete::generate(*shell, &mut Cli::command(), "mcpd", &mut std::io::stdout());
+            Ok(())
+        }
+        Command::Version => message(&cli, format!("mcpd {}", env!("CARGO_PKG_VERSION"))),
     }
 }
 
@@ -440,12 +539,26 @@ fn run_doctor(cli: &Cli, paths: &Paths) -> Result<()> {
         .into_iter()
         .map(|name| store.contains(&name).map(|present| (name, present)))
         .collect::<Result<Vec<_>>>()?;
+    let target_checks = targets::adapters(paths)?
+        .into_iter()
+        .map(|adapter| {
+            let result = adapter.server_names();
+            serde_json::json!({
+                "target": adapter.id(),
+                "detected": adapter.detect(),
+                "config": adapter.config_path(),
+                "valid": result.is_ok(),
+                "servers": result.as_ref().map_or(0, Vec::len),
+                "diagnostic": result.err().map(|error| error.to_string()),
+            })
+        })
+        .collect::<Vec<_>>();
     if cli.json {
-        let rows = checks
+        let secrets = checks
             .iter()
             .map(|(name, present)| serde_json::json!({"secret": name, "present": present}))
             .collect::<Vec<_>>();
-        output::json(&rows)
+        output::json(&serde_json::json!({"secrets": secrets, "targets": target_checks}))
     } else if cli.quiet {
         Ok(())
     } else {
@@ -458,6 +571,21 @@ fn run_doctor(cli: &Cli, paths: &Paths) -> Result<()> {
                 if present { "present" } else { "missing" }
             );
         }
+        println!("Targets");
+        for target in target_checks {
+            println!(
+                "{} {}",
+                if target["valid"].as_bool() == Some(true) {
+                    "ok"
+                } else {
+                    "invalid"
+                },
+                target_display_name(target["target"].as_str().unwrap_or("unknown"))
+            );
+            if let Some(diagnostic) = target["diagnostic"].as_str() {
+                println!("  {diagnostic}");
+            }
+        }
         Ok(())
     }
 }
@@ -469,48 +597,39 @@ fn render_import_report(cli: &Cli, report: &import::ImportReport) -> Result<()> 
     if cli.quiet {
         return Ok(());
     }
-    let action = if report.dry_run {
-        "would import"
-    } else {
-        "imported"
-    };
     println!(
-        "{} {} server(s) from {}",
-        action,
-        report.imported.len(),
+        "{} import from {}",
+        if report.dry_run {
+            "Dry-run"
+        } else {
+            "Completed"
+        },
         target_display_name(&report.target)
     );
+    if !report.imported.is_empty() {
+        println!("\nImported");
+        for entry in &report.imported {
+            println!("  + {}\t{}", entry.name, entry.transport);
+        }
+    }
+    if !report.skipped.is_empty() {
+        println!("\nSkipped");
+        for entry in &report.skipped {
+            println!("  ! {}\t{}", entry.name, entry.reason);
+        }
+    }
     if !report.migrated_secrets.is_empty() {
+        println!("\nSecrets");
         for name in &report.migrated_secrets {
             println!(
-                "{} {name}",
-                if report.dry_run {
-                    "would store"
-                } else {
-                    "✓ Stored"
-                }
+                "  {} {name}",
+                if report.dry_run { "would store" } else { "✓" }
             );
-        }
-    }
-    for entry in &report.imported {
-        if report.dry_run {
-            println!("  + {}\t{}", entry.name, entry.transport);
-        } else {
-            println!("✓ Imported {}\t{}", entry.name, entry.transport);
-        }
-    }
-    if !report.skipped_managed.is_empty() {
-        println!(
-            "skipped {} already managed server(s)",
-            report.skipped_managed.len()
-        );
-        for name in &report.skipped_managed {
-            println!("  = {name}");
         }
     }
     if report.dry_run {
         println!("No files or ownership state were modified.");
-    } else if !report.imported.is_empty() {
+    } else {
         println!("Target configuration was not modified.");
     }
     Ok(())
@@ -582,13 +701,7 @@ fn add_server(command: &AddCommand) -> Result<Server> {
 }
 
 fn target_enabled(cli: &Cli, paths: &Paths, target: &str, enabled: bool) -> Result<()> {
-    if target != "codex" {
-        return Err(McpdError::TargetUnavailable {
-            target: target.into(),
-            message: "only the Codex adapter exists in this milestone".into(),
-            hint: "supported target: codex".into(),
-        });
-    }
+    targets::adapter(target, paths)?;
     config::set_target_enabled(&paths.config, target, enabled)?;
     message(
         cli,
@@ -629,10 +742,7 @@ fn render_reports(cli: &Cli, reports: &[sync::SyncReport], dry_run: bool) -> Res
 }
 
 fn target_display_name(target: &str) -> &str {
-    match target {
-        "codex" => "Codex",
-        other => other,
-    }
+    targets::display_name(target)
 }
 
 fn render_inventory(plan: &crate::targets::TargetPlan) {

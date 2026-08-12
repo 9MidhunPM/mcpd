@@ -13,7 +13,7 @@ use crate::{
     model::Server,
     state::{self, TargetState},
     sync::{self, fs::hash_bytes},
-    targets,
+    targets::{self, ImportMode, ImportSkipped},
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,7 +27,7 @@ pub struct ImportReport {
     pub target: String,
     pub dry_run: bool,
     pub imported: Vec<ImportedEntry>,
-    pub skipped_managed: Vec<String>,
+    pub skipped: Vec<ImportSkipped>,
     pub migrated_secrets: Vec<String>,
 }
 
@@ -38,7 +38,7 @@ struct PreparedImport {
     canonical: config::AddServersPlan,
     next_state: TargetState,
     imported: Vec<ImportedEntry>,
-    skipped_managed: Vec<String>,
+    skipped: Vec<ImportSkipped>,
     secret_writes: Vec<crate::secrets::SecretWrite>,
     migrated_secrets: Vec<String>,
 }
@@ -59,18 +59,24 @@ pub fn import_target(
     selection: Option<&BTreeSet<String>>,
     paths: &Paths,
     dry_run: bool,
+    strict: bool,
     secret_mappings: BTreeMap<String, String>,
 ) -> Result<ImportReport> {
-    let secret_mappings =
-        resolve_secret_mappings(target, selection, paths, secret_mappings, dry_run)?;
-    let mut prepared = prepare(target, selection, paths, &secret_mappings)?;
-    validate_secret_destinations(paths, &mut prepared.secret_writes)?;
-    if dry_run || prepared.imported.is_empty() {
-        return Ok(report(&prepared, dry_run));
+    let secret_mappings = resolve_secret_mappings(target, selection, paths, secret_mappings)?;
+    if dry_run {
+        let mut prepared = prepare(target, selection, paths, &secret_mappings, strict)?;
+        validate_secret_destinations(paths, &mut prepared.secret_writes)?;
+        return Ok(report(&prepared, true));
+    }
+    let mut preflight = prepare(target, selection, paths, &secret_mappings, strict)?;
+    validate_secret_destinations(paths, &mut preflight.secret_writes)?;
+    if preflight.imported.is_empty() {
+        return Ok(report(&preflight, false));
     }
 
     sync::with_sync_lock(paths, || {
-        let mut prepared = prepare(target, selection, paths, &secret_mappings)?;
+        let mut prepared = prepare(target, selection, paths, &secret_mappings, strict)?;
+        confirm_secret_migrations(target, paths, &prepared, &secret_mappings, false)?;
         validate_secret_destinations(paths, &mut prepared.secret_writes)?;
         if prepared.imported.is_empty() {
             return Ok(report(&prepared, false));
@@ -145,6 +151,7 @@ fn prepare(
     selection: Option<&BTreeSet<String>>,
     paths: &Paths,
     secret_mappings: &BTreeMap<String, String>,
+    strict: bool,
 ) -> Result<PreparedImport> {
     let adapter = targets::adapter(target, paths)?;
     let state_path = paths.state_dir.join("state.toml");
@@ -154,46 +161,46 @@ fn prepare(
             && state.adapter_version == adapter.adapter_version()
     });
     let previously_managed = previous.map(|state| &state.managed);
-    if let Some(selection) = selection
-        && let Some(name) = selection
-            .iter()
-            .find(|name| previously_managed.is_some_and(|managed| managed.contains_key(*name)))
-    {
-        return Err(McpdError::Conflict {
-            message: format!("{target} MCP server `{name}` is already managed by mcpd"),
-            hint: "run `mcpd diff --all` to inspect its synchronization state".into(),
-        });
-    }
-    let (effective_selection, skipped_managed) = if let Some(selection) = selection {
-        (selection.clone(), Vec::new())
+    let bulk = selection.is_none();
+    let selected = if let Some(selection) = selection {
+        selection.clone()
     } else {
-        let names = adapter.server_names()?;
-        let skipped = names
-            .iter()
-            .filter(|name| previously_managed.is_some_and(|managed| managed.contains_key(*name)))
-            .cloned()
-            .collect();
-        let unmanaged = names
-            .into_iter()
-            .filter(|name| !previously_managed.is_some_and(|managed| managed.contains_key(name)))
-            .collect();
-        (unmanaged, skipped)
+        adapter.server_names()?.into_iter().collect()
     };
     let canonical_before = config::load(&paths.config)?;
-    if let Some(name) = effective_selection
-        .iter()
-        .find(|name| canonical_before.servers.contains_key(*name))
-    {
-        return Err(McpdError::Conflict {
-            message: format!(
-                "server `{name}` already exists in {}",
-                paths.config.display()
-            ),
-            hint: "keep the target entry unmanaged or remove/rename the canonical entry explicitly"
-                .into(),
-        });
+    let mut effective_selection = BTreeSet::new();
+    let mut skipped = Vec::new();
+    for name in selected {
+        let reason = if previously_managed.is_some_and(|managed| managed.contains_key(&name)) {
+            Some("already managed by mcpd".to_owned())
+        } else if canonical_before.servers.contains_key(&name) {
+            Some(format!("already exists in {}", paths.config.display()))
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            if !bulk || strict {
+                return Err(McpdError::Conflict {
+                    message: format!("server `{name}` {reason}"),
+                    hint: "keep the target entry unmanaged or remove/rename the canonical entry explicitly"
+                        .into(),
+                });
+            }
+            skipped.push(ImportSkipped { name, reason });
+        } else {
+            effective_selection.insert(name);
+        }
     }
-    let imported = adapter.import(Some(&effective_selection), secret_mappings)?;
+    let mut imported = adapter.import(
+        Some(&effective_selection),
+        secret_mappings,
+        if bulk && !strict {
+            ImportMode::BestEffort
+        } else {
+            ImportMode::Strict
+        },
+    )?;
+    skipped.append(&mut imported.skipped);
 
     let mut additions = BTreeMap::new();
     let mut ownership = previous
@@ -227,7 +234,7 @@ fn prepare(
             managed: ownership,
         },
         imported: entries,
-        skipped_managed,
+        skipped,
         secret_writes: imported.secret_writes,
         migrated_secrets,
     })
@@ -245,7 +252,7 @@ fn report(prepared: &PreparedImport, dry_run: bool) -> ImportReport {
         target: prepared.target.clone(),
         dry_run,
         imported: prepared.imported.clone(),
-        skipped_managed: prepared.skipped_managed.clone(),
+        skipped: prepared.skipped.clone(),
         migrated_secrets: prepared.migrated_secrets.clone(),
     }
 }
@@ -255,7 +262,6 @@ fn resolve_secret_mappings(
     selection: Option<&BTreeSet<String>>,
     paths: &Paths,
     mut mappings: BTreeMap<String, String>,
-    dry_run: bool,
 ) -> Result<BTreeMap<String, String>> {
     let adapter = targets::adapter(target, paths)?;
     let effective_selection = if let Some(selection) = selection {
@@ -285,29 +291,6 @@ fn resolve_secret_mappings(
                     && !mappings.contains_key(&mapping_key(&server, field))
             })
             .collect::<Vec<_>>();
-        if unmapped.is_empty() {
-            continue;
-        }
-        if !dry_run && io::stdin().is_terminal() {
-            eprintln!("{server} contains sensitive environment values:\n");
-            for field in &unmapped {
-                eprintln!("  {field}");
-            }
-            eprint!("\nStore securely in the OS keyring? [Y/n] ");
-            io::stderr()
-                .flush()
-                .map_err(|source| McpdError::io("<terminal>", source))?;
-            let mut answer = String::new();
-            io::stdin()
-                .read_line(&mut answer)
-                .map_err(|source| McpdError::io("<terminal>", source))?;
-            if matches!(answer.trim().to_ascii_lowercase().as_str(), "n" | "no") {
-                return Err(McpdError::InvalidInput {
-                    message: format!("secure secret migration for `{server}` was declined"),
-                    hint: "no canonical configuration or keyring entries were modified".into(),
-                });
-            }
-        }
         for field in unmapped {
             let secret_name = automatic_secret_name(&server, &field);
             crate::secrets::validate_name(&secret_name)?;
@@ -315,6 +298,64 @@ fn resolve_secret_mappings(
         }
     }
     Ok(mappings)
+}
+
+fn confirm_secret_migrations(
+    target: &str,
+    paths: &Paths,
+    prepared: &PreparedImport,
+    mappings: &BTreeMap<String, String>,
+    dry_run: bool,
+) -> Result<()> {
+    if dry_run || !io::stdin().is_terminal() || prepared.secret_writes.is_empty() {
+        return Ok(());
+    }
+    let written = prepared
+        .secret_writes
+        .iter()
+        .map(|write| &write.name)
+        .collect::<BTreeSet<_>>();
+    let adapter = targets::adapter(target, paths)?;
+    let imported = prepared
+        .imported
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect::<BTreeSet<_>>();
+    for (server, fields) in
+        group_sensitive_candidates(adapter.import_secret_candidates(Some(&imported))?)
+    {
+        let fields = fields
+            .into_iter()
+            .filter(|field| {
+                mappings
+                    .get(&mapping_key(&server, field))
+                    .or_else(|| mappings.get(field))
+                    .is_some_and(|name| written.contains(name))
+            })
+            .collect::<Vec<_>>();
+        if fields.is_empty() {
+            continue;
+        }
+        eprintln!("{server} contains sensitive environment values:\n");
+        for field in &fields {
+            eprintln!("  {field}");
+        }
+        eprint!("\nStore securely in the OS keyring? [Y/n] ");
+        io::stderr()
+            .flush()
+            .map_err(|source| McpdError::io("<terminal>", source))?;
+        let mut answer = String::new();
+        io::stdin()
+            .read_line(&mut answer)
+            .map_err(|source| McpdError::io("<terminal>", source))?;
+        if matches!(answer.trim().to_ascii_lowercase().as_str(), "n" | "no") {
+            return Err(McpdError::InvalidInput {
+                message: format!("secure secret migration for `{server}` was declined"),
+                hint: "no canonical configuration or keyring entries were modified".into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn group_sensitive_candidates(

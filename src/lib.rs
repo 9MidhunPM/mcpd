@@ -8,7 +8,9 @@ pub mod output;
 pub mod secrets;
 pub mod state;
 pub mod sync;
+pub mod systemd;
 pub mod targets;
+pub mod watch;
 
 use std::path::PathBuf;
 
@@ -49,5 +51,26 @@ impl Paths {
                 .unwrap_or_else(|| home.join(".codex/config.toml")),
             home,
         })
+    }
+
+    pub fn target_config(&self, target: &str) -> Option<PathBuf> {
+        let override_name = format!("MCPD_{}_CONFIG", target.to_ascii_uppercase());
+        if let Some(path) = std::env::var_os(override_name) {
+            return Some(PathBuf::from(path));
+        }
+        match target {
+            "codex" => Some(self.codex_config.clone()),
+            "claude" => Some(self.home.join(".claude.json")),
+            "cursor" => Some(self.home.join(".cursor/mcp.json")),
+            "antigravity" => Some(self.home.join(".gemini/config/mcp_config.json")),
+            "openchamber" => Some(
+                self.config
+                    .parent()
+                    .and_then(|path| path.parent())
+                    .unwrap_or(self.home.as_path())
+                    .join("opencode/opencode.json"),
+            ),
+            _ => None,
+        }
     }
 }

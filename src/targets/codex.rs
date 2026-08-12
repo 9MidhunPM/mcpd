@@ -13,9 +13,9 @@ use crate::{
     state::{ManagedServer, TargetState},
     sync::fs::ensure_safe_target_path,
     targets::{
-        Change, ChangeKind, HttpSecretCapability, ImportSecretCandidate, ImportedServer,
-        SecretCapabilities, StdioSecretCapability, TargetAdapter, TargetImport, TargetInventory,
-        TargetPlan,
+        Change, ChangeKind, HttpSecretCapability, ImportMode, ImportSecretCandidate, ImportSkipped,
+        ImportedServer, SecretCapabilities, StdioSecretCapability, TargetAdapter, TargetImport,
+        TargetInventory, TargetPlan,
     },
 };
 
@@ -95,6 +95,7 @@ impl TargetAdapter for CodexAdapter {
         &self,
         selection: Option<&BTreeSet<String>>,
         secret_mappings: &BTreeMap<String, String>,
+        mode: ImportMode,
     ) -> Result<TargetImport> {
         let Some((snapshot, document)) = self.read_document(false)? else {
             return Err(McpdError::TargetUnavailable {
@@ -114,40 +115,75 @@ impl TargetAdapter for CodexAdapter {
         }
 
         let mut servers = BTreeMap::new();
+        let mut skipped = Vec::new();
         let mut secret_values = BTreeMap::<String, String>::new();
         for (name, item) in current {
             if selection.is_some_and(|selection| !selection.contains(&name)) {
                 continue;
             }
-            if !crate::config::is_valid_server_id(&name) {
-                return Err(McpdError::InvalidInput {
-                    message: format!("Codex MCP server `{name}` is not a valid canonical server ID"),
-                    hint: "rename the target entry to match [a-zA-Z0-9][a-zA-Z0-9._-]* before importing".into(),
-                });
-            }
-            let (server, migrations) = import_server(&name, &item, secret_mappings)?;
-            let expected = render_server(&name, &server)?;
-            let rendered_hash = hash_item(&expected)?;
-            let current_hash = hash_item(&item)?;
-            if migrations.is_empty() && rendered_hash != current_hash {
-                return Err(McpdError::InvalidInput {
-                    message: format!("Codex MCP server `{name}` cannot be imported losslessly"),
-                    hint: "remove unsupported or redundant native fields, then retry the import"
-                        .into(),
-                });
-            }
-            for (secret_name, secret_value) in migrations {
-                if secret_values
-                    .get(&secret_name)
-                    .is_some_and(|existing| existing != &secret_value)
-                {
-                    return Err(McpdError::Conflict {
-                        message: format!(
-                            "multiple imported values were mapped to secret `{secret_name}`"
-                        ),
-                        hint: "use distinct keyring names for fields with different values".into(),
+            let imported = (|| {
+                if !crate::config::is_valid_server_id(&name) {
+                    return Err(McpdError::InvalidInput {
+                        message: format!("Codex MCP server `{name}` is not a valid canonical server ID"),
+                        hint: "rename the target entry to match [a-zA-Z0-9][a-zA-Z0-9._-]* before importing".into(),
                     });
                 }
+                let (server, migrations) = import_server(&name, &item, secret_mappings)?;
+                let expected = render_server(&name, &server)?;
+                let rendered_hash = hash_item(&expected)?;
+                let current_hash = hash_item(&item)?;
+                if migrations.is_empty() && rendered_hash != current_hash {
+                    return Err(McpdError::InvalidInput {
+                        message: format!("Codex MCP server `{name}` cannot be imported losslessly"),
+                        hint:
+                            "remove unsupported or redundant native fields, then retry the import"
+                                .into(),
+                    });
+                }
+                Ok((server, migrations, current_hash))
+            })();
+            let (server, migrations, current_hash) = match imported {
+                Ok(imported) => imported,
+                Err(error) if mode == ImportMode::BestEffort => {
+                    skipped.push(ImportSkipped {
+                        name,
+                        reason: error.to_string(),
+                    });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let mut prospective_secrets = BTreeMap::new();
+            let mut conflicting_secret = None;
+            for (secret_name, secret_value) in &migrations {
+                if secret_values
+                    .get(secret_name)
+                    .or_else(|| prospective_secrets.get(secret_name))
+                    .is_some_and(|existing| existing != secret_value)
+                {
+                    conflicting_secret = Some(secret_name.clone());
+                    break;
+                }
+                prospective_secrets.insert(secret_name.clone(), secret_value.clone());
+            }
+            if let Some(secret_name) = conflicting_secret {
+                if mode == ImportMode::BestEffort {
+                    skipped.push(ImportSkipped {
+                        name,
+                        reason: format!(
+                            "multiple imported values map to keyring secret `{secret_name}`"
+                        ),
+                    });
+                    continue;
+                }
+                return Err(McpdError::Conflict {
+                    message: format!(
+                        "multiple imported values were mapped to secret `{secret_name}`"
+                    ),
+                    hint: "use distinct keyring names for fields with different values".into(),
+                });
+            }
+            for (secret_name, secret_value) in prospective_secrets {
                 secret_values.insert(secret_name, secret_value);
             }
             servers.insert(
@@ -166,6 +202,7 @@ impl TargetAdapter for CodexAdapter {
             path: self.path.clone(),
             snapshot,
             servers,
+            skipped,
             secret_writes: secret_values
                 .into_iter()
                 .map(|(name, value)| crate::secrets::SecretWrite {

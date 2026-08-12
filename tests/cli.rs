@@ -172,6 +172,42 @@ fn init_creates_only_canonical_config() {
 }
 
 #[test]
+fn targets_completions_get_and_version_cover_the_v01_command_surface() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.add_context7_no_sync();
+
+    environment
+        .command()
+        .arg("targets")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Claude Code"))
+        .stdout(predicate::str::contains("Cursor"))
+        .stdout(predicate::str::contains("Codex"))
+        .stdout(predicate::str::contains("Antigravity"))
+        .stdout(predicate::str::contains("OpenChamber"));
+    environment
+        .command()
+        .args(["get", "context7"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("command = \"npx\""));
+    environment
+        .command()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_mcpd"));
+    environment
+        .command()
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mcpd 0.1.0"));
+}
+
+#[test]
 fn add_no_sync_changes_only_canonical_configuration() {
     let environment = TestEnvironment::new();
     environment.init();
@@ -660,8 +696,8 @@ command = "playwright-mcp"
         .args(["import", "codex", "github"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("imported 1 server(s) from Codex"))
-        .stdout(predicate::str::contains("✓ Imported github\tstdio"))
+        .stdout(predicate::str::contains("Completed import from Codex"))
+        .stdout(predicate::str::contains("+ github\tstdio"))
         .stdout(predicate::str::contains(
             "Target configuration was not modified",
         ));
@@ -719,9 +755,9 @@ Authorization = "DOCS_TOKEN"
         .args(["import", "codex", "--all"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("imported 2 server(s)"))
-        .stdout(predicate::str::contains("✓ Imported docs\thttp"))
-        .stdout(predicate::str::contains("✓ Imported github\tstdio"));
+        .stdout(predicate::str::contains("Completed import from Codex"))
+        .stdout(predicate::str::contains("+ docs\thttp"))
+        .stdout(predicate::str::contains("+ github\tstdio"));
 
     assert_eq!(fs::read(&environment.codex).unwrap(), target_before);
     let canonical = environment.parse_config();
@@ -761,7 +797,7 @@ fn import_dry_run_performs_absolutely_no_writes() {
         .args(["import", "codex", "github", "--dry-run"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("would import 1 server(s)"))
+        .stdout(predicate::str::contains("Dry-run import from Codex"))
         .stdout(predicate::str::contains(
             "No files or ownership state were modified",
         ));
@@ -771,7 +807,7 @@ fn import_dry_run_performs_absolutely_no_writes() {
 }
 
 #[test]
-fn import_conflict_aborts_the_entire_batch_without_writes() {
+fn bulk_import_skips_canonical_collisions_without_overwriting_them() {
     let environment = TestEnvironment::new();
     environment.init();
     environment
@@ -782,18 +818,109 @@ fn import_conflict_aborts_the_entire_batch_without_writes() {
     environment.write_codex(
         "[mcp_servers.docs]\nurl = 'https://docs.example/mcp'\n\n[mcp_servers.github]\ncommand = 'target-github'\n",
     );
-    let before = snapshot_tree(environment.root());
+    let target_before = fs::read(&environment.codex).unwrap();
 
     environment
         .command()
         .args(["import", "codex", "--all"])
         .assert()
-        .code(4)
-        .stderr(predicate::str::contains("server `github` already exists"));
+        .success()
+        .stdout(predicate::str::contains("+ docs\thttp"))
+        .stdout(predicate::str::contains("Skipped"))
+        .stdout(predicate::str::contains("! github\talready exists"));
 
+    assert_eq!(fs::read(&environment.codex).unwrap(), target_before);
+    assert!(environment.parse_config()["servers"].get("docs").is_some());
+    assert!(
+        environment.parse_config()["servers"]
+            .get("github")
+            .is_some()
+    );
+}
+
+#[test]
+fn bulk_import_is_best_effort_and_only_commits_secrets_for_imported_servers() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.write_codex(
+        r#"[mcp_servers.github]
+command = "github-mcp"
+[mcp_servers.github.env]
+GITHUB_TOKEN = "github-secret-canary"
+
+[mcp_servers.playwright]
+command = "playwright-mcp"
+
+[mcp_servers.gh_grep]
+command = "gh-grep-mcp"
+startup_timeout_sec = 30
+[mcp_servers.gh_grep.env]
+GH_TOKEN = "skipped-secret-canary"
+"#,
+    );
+    let target_before = fs::read(&environment.codex).unwrap();
+
+    environment
+        .command()
+        .args(["import", "codex", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Imported"))
+        .stdout(predicate::str::contains("+ github\tstdio"))
+        .stdout(predicate::str::contains("+ playwright\tstdio"))
+        .stdout(predicate::str::contains("Skipped"))
+        .stdout(predicate::str::contains("! gh_grep\t"))
+        .stdout(predicate::str::contains(
+            "unsupported field `startup_timeout_sec`",
+        ))
+        .stdout(predicate::str::contains("✓ github.GITHUB_TOKEN"))
+        .stdout(predicate::str::contains("gh_grep.GH_TOKEN").not())
+        .stdout(predicate::str::contains("github-secret-canary").not())
+        .stdout(predicate::str::contains("skipped-secret-canary").not());
+
+    assert_eq!(fs::read(&environment.codex).unwrap(), target_before);
+    let canonical = environment.parse_config();
+    assert!(canonical["servers"].get("github").is_some());
+    assert!(canonical["servers"].get("playwright").is_some());
+    assert!(canonical["servers"].get("gh_grep").is_none());
+    environment
+        .command()
+        .arg("secret")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("github.GITHUB_TOKEN"))
+        .stdout(predicate::str::contains("gh_grep.GH_TOKEN").not());
+}
+
+#[test]
+fn strict_bulk_and_single_imports_abort_when_a_server_is_not_lossless() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.write_codex(
+        "[mcp_servers.github]\ncommand = 'github-mcp'\n\n[mcp_servers.gh_grep]\ncommand = 'gh-grep-mcp'\nstartup_timeout_sec = 30\n",
+    );
+    let before = snapshot_tree(environment.root());
+
+    environment
+        .command()
+        .args(["import", "codex", "--all", "--strict"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "unsupported field `startup_timeout_sec`",
+        ));
     assert_eq!(snapshot_tree(environment.root()), before);
-    assert!(environment.parse_config()["servers"].get("docs").is_none());
-    assert!(!environment.state.exists());
+
+    environment
+        .command()
+        .args(["import", "codex", "gh_grep"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "unsupported field `startup_timeout_sec`",
+        ));
+    assert_eq!(snapshot_tree(environment.root()), before);
 }
 
 #[test]
@@ -808,7 +935,7 @@ fn import_automatically_migrates_strongly_sensitive_field_names() {
         .args(["import", "codex", "github"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("✓ Stored github.GITHUB_TOKEN"))
+        .stdout(predicate::str::contains("✓ github.GITHUB_TOKEN"))
         .stdout(predicate::str::contains("do-not-copy").not());
     assert_eq!(
         environment.parse_config()["servers"]["github"]["env"]["GITHUB_TOKEN"]["secret"].as_str(),
@@ -845,9 +972,9 @@ PORT = "3000"
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "✓ Stored github.GITHUB_PERSONAL_ACCESS_TOKEN",
+            "✓ github.GITHUB_PERSONAL_ACCESS_TOKEN",
         ))
-        .stdout(predicate::str::contains("✓ Stored dokploy.DOKPLOY_API_KEY"))
+        .stdout(predicate::str::contains("✓ dokploy.DOKPLOY_API_KEY"))
         .stdout(predicate::str::contains("github-secret-canary").not())
         .stdout(predicate::str::contains("dokploy-secret-canary").not());
 
@@ -937,9 +1064,9 @@ fn repeated_bulk_import_skips_managed_entries_without_writes() {
         .args(["import", "codex", "--all"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("imported 0 server(s)"))
+        .stdout(predicate::str::contains("Skipped"))
         .stdout(predicate::str::contains(
-            "skipped 1 already managed server(s)",
+            "! github\talready managed by mcpd",
         ));
 
     assert_eq!(snapshot_tree(environment.root()), before);
@@ -1138,7 +1265,7 @@ fn import_uses_deterministic_secret_name_and_preserves_non_sensitive_literals() 
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "✓ Stored github.GITHUB_PERSONAL_ACCESS_TOKEN",
+            "✓ github.GITHUB_PERSONAL_ACCESS_TOKEN",
         ))
         .stdout(predicate::str::contains("import-secret-canary").not());
 
@@ -1179,7 +1306,7 @@ fn secret_import_dry_run_has_zero_writes() {
         .args(["import", "codex", "github", "--dry-run"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("would import"))
+        .stdout(predicate::str::contains("Dry-run import from Codex"))
         .stdout(predicate::str::contains("dry-run-canary").not());
 
     assert_eq!(snapshot_tree(environment.root()), before);
