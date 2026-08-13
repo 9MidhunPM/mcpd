@@ -20,10 +20,7 @@ fn main() {
         let exit_code = ExitCode::from(&error) as i32;
         if json_errors {
             let rendered = serde_json::json!({"error": error.to_string(), "hint": error.hint(), "exit_code": exit_code});
-            eprintln!(
-                "{}",
-                serde_json::to_string(&rendered).expect("error JSON is serializable")
-            );
+            eprintln!("{rendered}");
         } else {
             eprintln!("mcpd: {error}");
             if let Some(hint) = error.hint() {

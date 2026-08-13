@@ -1,0 +1,11 @@
+id = "bananacode"
+name = "BananaCode"
+platforms = ["linux"]
+
+[detect]
+commands = ["bananacode"]
+
+[config]
+path = "~/.banana/config.jsonc"
+format = "jsonc"
+servers_path = "mcp.servers"

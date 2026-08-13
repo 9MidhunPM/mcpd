@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use clap::{ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
@@ -20,8 +23,10 @@ use crate::{
     about = "Configure MCP once. Use it everywhere."
 )]
 pub struct Cli {
-    #[arg(long, global = true)]
+    /// Emit machine-readable JSON where the command has structured output.
+    #[arg(long, global = true, conflicts_with = "quiet")]
     pub json: bool,
+    /// Suppress successful human-readable output.
     #[arg(long, global = true)]
     pub quiet: bool,
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
@@ -32,29 +37,41 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create an empty global canonical configuration without touching clients.
     Init,
+    /// Add a canonical stdio or Streamable HTTP server.
     Add(AddCommand),
+    /// Remove a canonical server and synchronize enabled targets.
     Remove {
         name: String,
         #[arg(long)]
         no_sync: bool,
     },
+    /// List resolved canonical servers for the current project context.
     List,
+    /// Show one resolved canonical server with secret references still symbolic.
     Get {
         #[arg(value_parser = config::parse_server_id)]
         name: String,
     },
+    /// Discover, enable, or disable target adapters.
     Targets {
         #[command(subcommand)]
         command: Option<TargetCommand>,
     },
+    /// Compare resolved canonical state with enabled targets without writing.
     Diff {
         #[arg(long, alias = "include-unmanaged")]
         all: bool,
+        #[command(flatten)]
+        targets: TargetFilter,
     },
+    /// Synchronize enabled targets using backups and atomic writes.
     Sync {
         #[arg(long)]
         dry_run: bool,
+        #[command(flatten)]
+        targets: TargetFilter,
     },
     /// Import existing target MCP definitions into canonical configuration.
     Import(ImportCommand),
@@ -69,8 +86,20 @@ enum Command {
         server: String,
     },
     /// Check canonical secret references without revealing their values.
-    Doctor,
-    Status,
+    Doctor {
+        #[command(flatten)]
+        targets: TargetFilter,
+        /// Perform explicit network reachability checks for HTTP MCP servers.
+        #[arg(long)]
+        network: bool,
+    },
+    /// Summarize configured servers, target enablement, drift, and parse health.
+    Status {
+        #[command(flatten)]
+        targets: TargetFilter,
+    },
+    /// Trust, list, or revoke project-local mcpd overlays.
+    Trust(TrustCommand),
     /// Watch canonical configuration and synchronize enabled targets after a debounce.
     Watch,
     /// Manage the optional user-level systemd watch service.
@@ -79,17 +108,43 @@ enum Command {
         command: SystemdCommand,
     },
     /// Generate shell completion scripts on stdout.
-    Completions {
-        shell: Shell,
-    },
+    Completions { shell: Shell },
+    /// Print the mcpd version.
     Version,
 }
 
 #[derive(Debug, Subcommand)]
 enum SystemdCommand {
+    /// Print the user unit without writing it.
+    Generate,
     Install,
     Uninstall,
     Status,
+}
+
+#[derive(Debug, Args, Default)]
+struct TargetFilter {
+    /// Limit the command to a target; repeat for multiple targets.
+    #[arg(long = "target", value_name = "TARGET")]
+    targets: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("trust_action")
+        .args(["list", "revoke"])
+        .multiple(false)
+))]
+struct TrustCommand {
+    /// Project directory to trust (defaults to the current project).
+    #[arg(value_name = "PATH", conflicts_with_all = ["list", "revoke"])]
+    path: Option<PathBuf>,
+    /// List trusted project directories.
+    #[arg(long)]
+    list: bool,
+    /// Revoke trust for a project directory.
+    #[arg(long, value_name = "PATH")]
+    revoke: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -137,6 +192,14 @@ enum SecretCommand {
         #[arg(value_parser = config::parse_server_id)]
         name: String,
     },
+    /// Reveal a value only with an explicit unsafe acknowledgement.
+    Get {
+        #[arg(value_parser = config::parse_server_id)]
+        name: String,
+        /// Print the raw value to stdout (unsafe for logs and terminal history).
+        #[arg(long)]
+        reveal: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -169,14 +232,19 @@ struct StatusOutput {
 
 #[derive(Serialize)]
 struct TargetStatus {
-    target: &'static str,
+    target: String,
+    display_name: String,
     detected: bool,
     enabled: bool,
     status: &'static str,
     managed: usize,
     unmanaged: usize,
     pending: usize,
+    diagnostic: Option<String>,
+    compatibility: targets::Compatibility,
 }
+
+type AdapterInventory = (Vec<Box<dyn targets::TargetAdapter>>, Vec<(String, String)>);
 
 pub fn run(cli: Cli, paths: Paths) -> Result<()> {
     match &cli.command {
@@ -202,7 +270,7 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     ),
                 );
             }
-            let canonical = config::load(&paths.config)?;
+            let canonical = crate::resolve::load(&paths)?.config;
             let reports = sync::sync_enabled_targets(&canonical, &paths, false)?;
             render_reports(&cli, &reports, false)
         }
@@ -216,12 +284,12 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     ),
                 );
             }
-            let canonical = config::load(&paths.config)?;
+            let canonical = crate::resolve::load(&paths)?.config;
             let reports = sync::sync_enabled_targets(&canonical, &paths, false)?;
             render_reports(&cli, &reports, false)
         }
         Command::List => {
-            let canonical = config::load(&paths.config)?;
+            let canonical = crate::resolve::load(&paths)?.config;
             if cli.json {
                 output::json(&canonical.servers)
             } else if cli.quiet {
@@ -241,7 +309,7 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
             }
         }
         Command::Get { name } => {
-            let canonical = config::load(&paths.config)?;
+            let canonical = crate::resolve::load(&paths)?.config;
             let server = canonical
                 .servers
                 .get(name)
@@ -283,7 +351,7 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                             } else {
                                 "not detected"
                             },
-                            target_display_name(adapter.id()),
+                            adapter.display_name(),
                             if canonical
                                 .targets
                                 .get(adapter.id())
@@ -299,9 +367,9 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 }
             }
         },
-        Command::Diff { all } => {
-            let canonical = config::load(&paths.config)?;
-            let plans = sync::plan_enabled_targets(&canonical, &paths)?;
+        Command::Diff { all, targets } => {
+            let canonical = crate::resolve::load(&paths)?.config;
+            let plans = sync::plan_selected_targets(&canonical, &paths, &targets.targets)?;
             if cli.json {
                 output::json(
                     &plans
@@ -330,7 +398,7 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     return Ok(());
                 }
                 for plan in plans {
-                    println!("{}", target_display_name(plan.target));
+                    println!("{}", target_display_name(&plan.target));
                     if *all {
                         render_inventory(&plan);
                     } else {
@@ -345,10 +413,22 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 Ok(())
             }
         }
-        Command::Sync { dry_run } => {
-            let canonical = config::load(&paths.config)?;
-            let reports = sync::sync_enabled_targets(&canonical, &paths, *dry_run)?;
-            render_reports(&cli, &reports, *dry_run)
+        Command::Sync { dry_run, targets } => {
+            let canonical = crate::resolve::load(&paths)?.config;
+            let batch = sync::sync_selected_targets_isolated(
+                &canonical,
+                &paths,
+                &targets.targets,
+                *dry_run,
+            )?;
+            if cli.json {
+                output::json(&batch)?;
+            } else if !batch.reports.is_empty() {
+                render_reports(&cli, &batch.reports, *dry_run)?;
+            } else if batch.failures.is_empty() && !cli.quiet {
+                println!("No enabled targets.");
+            }
+            batch.into_result().map(|_| ())
         }
         Command::Import(command) => {
             let selection = command.server.iter().cloned().collect::<BTreeSet<_>>();
@@ -366,18 +446,66 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
         }
         Command::Secret { command } => run_secret_command(&cli, command, &paths),
         Command::Exec { server } => crate::execution::execute(server, &paths),
-        Command::Doctor => run_doctor(&cli, &paths),
-        Command::Status => {
-            let canonical = config::load(&paths.config)?;
+        Command::Doctor { targets, network } => {
+            run_doctor(&cli, &paths, &targets.targets, *network)
+        }
+        Command::Status { targets } => {
+            let resolved = crate::resolve::load(&paths)?;
+            let canonical = resolved.config;
             let state_file = crate::state::load(&paths.state_dir.join("state.toml"))?;
-            let plans = sync::plan_enabled_targets(&canonical, &paths)?;
-            let mut target_rows = Vec::new();
-            for adapter in targets::adapters(&paths)? {
+            let enabled_selection = targets
+                .targets
+                .iter()
+                .filter(|id| {
+                    canonical
+                        .targets
+                        .get(*id)
+                        .is_some_and(|target| target.enabled)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let batch = if targets.targets.is_empty() {
+                sync::sync_selected_targets_isolated(&canonical, &paths, &[], true)?
+            } else if enabled_selection.is_empty() {
+                sync::SyncBatch::default()
+            } else {
+                sync::sync_selected_targets_isolated(&canonical, &paths, &enabled_selection, true)?
+            };
+            let (adapters, unavailable) = if targets.targets.is_empty() {
+                adapters_with_enabled_failures(&paths, &canonical)?
+            } else {
+                (selected_adapters(&paths, &targets.targets)?, Vec::new())
+            };
+            let mut target_rows = unavailable
+                .into_iter()
+                .map(|(target, diagnostic)| TargetStatus {
+                    display_name: target_display_name(&target).into(),
+                    compatibility: targets::Compatibility {
+                        adapter_version: 0,
+                        native_schema: "unavailable",
+                        client_version: canonical
+                            .targets
+                            .get(&target)
+                            .and_then(|target| target.client_version.clone()),
+                        status: "unavailable",
+                    },
+                    target,
+                    detected: false,
+                    enabled: true,
+                    status: "invalid",
+                    managed: 0,
+                    unmanaged: 0,
+                    pending: 0,
+                    diagnostic: Some(diagnostic),
+                })
+                .collect::<Vec<_>>();
+            for adapter in adapters {
                 let enabled = canonical
                     .targets
                     .get(adapter.id())
                     .is_some_and(|v| v.enabled);
-                let names = adapter.server_names()?;
+                let names_result = adapter.server_names();
+                let names = names_result.as_deref().unwrap_or_default();
                 let managed_names = state_file
                     .targets
                     .get(adapter.id())
@@ -387,15 +515,28 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     })
                     .map(|state| state.managed.keys().collect::<BTreeSet<_>>())
                     .unwrap_or_default();
-                let pending = plans
+                let pending = batch
+                    .reports
                     .iter()
-                    .find(|plan| plan.target == adapter.id())
-                    .map_or(0, |plan| plan.changes.len());
+                    .find(|report| report.target == adapter.id())
+                    .map_or(0, |report| report.changes.len());
+                let sync_failure = batch
+                    .failures
+                    .iter()
+                    .find(|failure| failure.target == adapter.id());
+                let diagnostic = names_result
+                    .as_ref()
+                    .err()
+                    .map(ToString::to_string)
+                    .or_else(|| sync_failure.map(|failure| failure.error.clone()));
                 target_rows.push(TargetStatus {
-                    target: adapter.id(),
+                    target: adapter.id().into(),
+                    display_name: adapter.display_name().into(),
                     detected: adapter.detect(),
                     enabled,
-                    status: if !enabled {
+                    status: if diagnostic.is_some() {
+                        "invalid"
+                    } else if !enabled {
                         "disabled"
                     } else if pending == 0 {
                         "synced"
@@ -408,6 +549,13 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                         .filter(|name| !managed_names.contains(name))
                         .count(),
                     pending,
+                    diagnostic,
+                    compatibility: adapter.compatibility(
+                        canonical
+                            .targets
+                            .get(adapter.id())
+                            .and_then(|target| target.client_version.as_deref()),
+                    ),
                 });
             }
             let status = StatusOutput {
@@ -428,18 +576,26 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     };
                     println!(
                         "{:<9} {:<9} {} managed / {} unmanaged{}",
-                        target_display_name(target.target),
+                        target.display_name,
                         target.status,
                         target.managed,
                         target.unmanaged,
                         pending
                     );
+                    if let Some(diagnostic) = target.diagnostic {
+                        println!("  {diagnostic}");
+                    }
                 }
                 Ok(())
             }
         }
+        Command::Trust(command) => run_trust_command(&cli, command, &paths),
         Command::Watch => crate::watch::run(&paths),
         Command::Systemd { command } => match command {
+            SystemdCommand::Generate => {
+                let unit = crate::systemd::generate()?;
+                message(&cli, unit)
+            }
             SystemdCommand::Install => {
                 let path = crate::systemd::install(&paths)?;
                 crate::systemd::reload_user_manager()?;
@@ -529,39 +685,163 @@ fn run_secret_command(cli: &Cli, command: &SecretCommand, paths: &Paths) -> Resu
             }
             message(cli, format!("secret `{name}` is present"))
         }
+        SecretCommand::Get { name, reveal } => {
+            if !reveal {
+                return Err(McpdError::InvalidInput {
+                    message: format!("refusing to reveal secret `{name}` without `--reveal`"),
+                    hint: format!("run `mcpd secret get {name} --reveal` only in a safe terminal"),
+                });
+            }
+            if cli.json || cli.quiet {
+                return Err(McpdError::InvalidInput {
+                    message: "secret reveal is unavailable with --json or --quiet".into(),
+                    hint: "run the explicit reveal command without machine-output flags".into(),
+                });
+            }
+            let value = store.get(name)?.ok_or_else(|| McpdError::InvalidInput {
+                message: format!("secret `{name}` does not exist"),
+                hint: "run `mcpd secret list` to see registered secret names".into(),
+            })?;
+            eprintln!(
+                "Warning: revealing `{name}` may expose it in terminal scrollback or captured output."
+            );
+            println!("{}", value.expose());
+            Ok(())
+        }
     }
 }
 
-fn run_doctor(cli: &Cli, paths: &Paths) -> Result<()> {
-    let canonical = config::load(&paths.config)?;
+fn run_doctor(cli: &Cli, paths: &Paths, selected: &[String], network: bool) -> Result<()> {
+    let resolved = crate::resolve::load(paths)?;
+    let canonical = resolved.config;
     let store = crate::secrets::SecretStore::discover(paths)?;
     let checks = crate::secrets::referenced_names(&canonical)
         .into_iter()
         .map(|name| store.contains(&name).map(|present| (name, present)))
         .collect::<Result<Vec<_>>>()?;
-    let target_checks = targets::adapters(paths)?
+    let (adapters, unavailable) = if selected.is_empty() {
+        adapters_with_enabled_failures(paths, &canonical)?
+    } else {
+        (selected_adapters(paths, selected)?, Vec::new())
+    };
+    let mut target_checks = unavailable
+        .into_iter()
+        .map(|(target, diagnostic)| {
+            serde_json::json!({
+                "target": target,
+                "display_name": target_display_name(&target),
+                "detected": false,
+                "config": null,
+                "valid": false,
+                "servers": 0,
+                "diagnostic": diagnostic,
+                "compatibility": {
+                    "adapter_version": 0,
+                    "native_schema": "unavailable",
+                    "client_version": canonical.targets.get(&target).and_then(|target| target.client_version.as_deref()),
+                    "status": "unavailable",
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    target_checks.extend(adapters
         .into_iter()
         .map(|adapter| {
             let result = adapter.server_names();
             serde_json::json!({
                 "target": adapter.id(),
+                "display_name": adapter.display_name(),
                 "detected": adapter.detect(),
                 "config": adapter.config_path(),
                 "valid": result.is_ok(),
                 "servers": result.as_ref().map_or(0, Vec::len),
                 "diagnostic": result.err().map(|error| error.to_string()),
+                "compatibility": adapter.compatibility(
+                    canonical.targets.get(adapter.id()).and_then(|target| target.client_version.as_deref())
+                ),
             })
         })
+        .collect::<Vec<_>>());
+    let command_checks = canonical
+        .servers
+        .iter()
+        .filter_map(|(name, server)| match server {
+            Server::Stdio { command, .. } => Some(serde_json::json!({
+                "server": name,
+                "command": command,
+                "available": executable_available(command),
+            })),
+            Server::Http { .. } => None,
+        })
         .collect::<Vec<_>>();
+    let network_checks = if network {
+        canonical
+            .servers
+            .iter()
+            .filter_map(|(name, server)| match server {
+                Server::Http { url, .. } => Some(check_http_reachability(name, url)),
+                Server::Stdio { .. } => None,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    #[cfg(unix)]
+    let state_permissions = std::fs::metadata(&paths.state_dir).ok().map(|metadata| {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o777
+    });
+    #[cfg(not(unix))]
+    let state_permissions: Option<u32> = None;
+    let systemd_available = executable_available("systemctl");
+    let sync_lock = sync::lock_status(paths)?;
     if cli.json {
         let secrets = checks
             .iter()
             .map(|(name, present)| serde_json::json!({"secret": name, "present": present}))
             .collect::<Vec<_>>();
-        output::json(&serde_json::json!({"secrets": secrets, "targets": target_checks}))
+        output::json(&serde_json::json!({
+            "project": resolved.project.as_ref().map(|project| serde_json::json!({
+                "root": project.root,
+                "overlay": project.overlay,
+                "overlay_present": project.present,
+                "trusted": project.trusted,
+            })),
+            "secrets": secrets,
+            "targets": target_checks,
+            "commands": command_checks,
+            "network_checks_requested": network,
+            "network": network_checks,
+            "state_directory": {
+                "path": paths.state_dir,
+                "permissions": state_permissions,
+                "private": state_permissions.is_none_or(|mode| mode & 0o077 == 0),
+            },
+            "systemd_available": systemd_available,
+            "sync_lock": sync_lock,
+        }))
     } else if cli.quiet {
         Ok(())
     } else {
+        if let Some(project) = &resolved.project {
+            println!(
+                "Project overlay: {}{}",
+                if project.present {
+                    project.overlay.display().to_string()
+                } else {
+                    "not present".into()
+                },
+                if project.present {
+                    if project.trusted {
+                        " (trusted)"
+                    } else {
+                        " (ignored: untrusted)"
+                    }
+                } else {
+                    ""
+                }
+            );
+        }
         if checks.is_empty() {
             println!("No canonical secret references.");
         }
@@ -571,6 +851,60 @@ fn run_doctor(cli: &Cli, paths: &Paths) -> Result<()> {
                 if present { "present" } else { "missing" }
             );
         }
+        println!("Commands");
+        if command_checks.is_empty() {
+            println!("ok no stdio commands configured");
+        }
+        for command in command_checks {
+            println!(
+                "{} {} ({})",
+                if command["available"].as_bool() == Some(true) {
+                    "ok"
+                } else {
+                    "missing"
+                },
+                command["server"].as_str().unwrap_or("unknown"),
+                command["command"].as_str().unwrap_or("unknown")
+            );
+        }
+        if network {
+            println!("Network");
+            if network_checks.is_empty() {
+                println!("ok no HTTP servers configured");
+            }
+            for check in network_checks {
+                println!(
+                    "{} {}{}",
+                    if check["reachable"].as_bool() == Some(true) {
+                        "ok"
+                    } else {
+                        "unreachable"
+                    },
+                    check["server"].as_str().unwrap_or("unknown"),
+                    check["diagnostic"]
+                        .as_str()
+                        .map_or(String::new(), |diagnostic| format!(" ({diagnostic})"))
+                );
+            }
+        }
+        println!(
+            "{} state directory permissions{}",
+            if state_permissions.is_none_or(|mode| mode & 0o077 == 0) {
+                "ok"
+            } else {
+                "unsafe"
+            },
+            state_permissions.map_or(String::new(), |mode| format!(" ({mode:o})"))
+        );
+        println!(
+            "{} systemd user tooling",
+            if systemd_available {
+                "ok"
+            } else {
+                "unavailable"
+            }
+        );
+        println!("{sync_lock} sync lock");
         println!("Targets");
         for target in target_checks {
             println!(
@@ -580,7 +914,7 @@ fn run_doctor(cli: &Cli, paths: &Paths) -> Result<()> {
                 } else {
                     "invalid"
                 },
-                target_display_name(target["target"].as_str().unwrap_or("unknown"))
+                target["display_name"].as_str().unwrap_or("unknown")
             );
             if let Some(diagnostic) = target["diagnostic"].as_str() {
                 println!("  {diagnostic}");
@@ -588,6 +922,130 @@ fn run_doctor(cli: &Cli, paths: &Paths) -> Result<()> {
         }
         Ok(())
     }
+}
+
+fn check_http_reachability(name: &str, url: &Url) -> serde_json::Value {
+    use std::{net::ToSocketAddrs, time::Duration};
+
+    let port = url.port_or_known_default();
+    let result = url
+        .host_str()
+        .zip(port)
+        .ok_or_else(|| "URL has no host or known port".to_owned())
+        .and_then(|(host, port)| {
+            (host, port)
+                .to_socket_addrs()
+                .map_err(|error| format!("DNS resolution failed: {error}"))?
+                .next()
+                .ok_or_else(|| "DNS resolution returned no addresses".to_owned())
+        })
+        .and_then(|address| {
+            std::net::TcpStream::connect_timeout(&address, Duration::from_secs(3))
+                .map(|_| ())
+                .map_err(|error| format!("connection failed: {error}"))
+        });
+    serde_json::json!({
+        "server": name,
+        "url": url,
+        "reachable": result.is_ok(),
+        "diagnostic": result.err(),
+    })
+}
+
+fn executable_available(command: &str) -> bool {
+    let path = std::path::Path::new(command);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .any(|path| path.join(command).is_file())
+}
+
+fn selected_adapters(
+    paths: &Paths,
+    selected: &[String],
+) -> Result<Vec<Box<dyn targets::TargetAdapter>>> {
+    if selected.is_empty() {
+        return targets::adapters(paths);
+    }
+    let mut unique = BTreeSet::new();
+    let mut adapters = Vec::new();
+    for id in selected {
+        if unique.insert(id.as_str()) {
+            adapters.push(targets::adapter(id, paths)?);
+        }
+    }
+    Ok(adapters)
+}
+
+fn adapters_with_enabled_failures(
+    paths: &Paths,
+    canonical: &crate::model::CanonicalConfig,
+) -> Result<AdapterInventory> {
+    let mut adapters = targets::adapters(paths)?;
+    let mut seen = adapters
+        .iter()
+        .map(|adapter| adapter.id().to_owned())
+        .collect::<BTreeSet<_>>();
+    let mut unavailable = Vec::new();
+    for id in canonical
+        .targets
+        .iter()
+        .filter(|(_, target)| target.enabled)
+        .map(|(id, _)| id)
+    {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        match targets::adapter(id, paths) {
+            Ok(adapter) => adapters.push(adapter),
+            Err(error) => unavailable.push((id.clone(), error.to_string())),
+        }
+    }
+    Ok((adapters, unavailable))
+}
+
+fn run_trust_command(cli: &Cli, command: &TrustCommand, paths: &Paths) -> Result<()> {
+    if command.list {
+        let projects = crate::resolve::trusted_projects(paths)?;
+        if cli.json {
+            return output::json(&projects);
+        }
+        if !cli.quiet {
+            if projects.is_empty() {
+                println!("No trusted projects.");
+            } else {
+                for project in projects {
+                    println!("{}", project.display());
+                }
+            }
+        }
+        return Ok(());
+    }
+    if let Some(project) = &command.revoke {
+        let (project, removed) = crate::resolve::revoke(paths, project)?;
+        return message(
+            cli,
+            if removed {
+                format!("revoked trust for {}", project.display())
+            } else {
+                format!("{} was not trusted", project.display())
+            },
+        );
+    }
+    let project = match &command.path {
+        Some(path) => path.clone(),
+        None => {
+            crate::resolve::discover_project_root()?.ok_or_else(|| McpdError::InvalidInput {
+                message: "could not find a project from the current directory".into(),
+                hint: "run inside a repository or pass `mcpd trust PATH`".into(),
+            })?
+        }
+    };
+    let project = crate::resolve::trust(paths, &project)?;
+    message(cli, format!("trusted project {}", project.display()))
 }
 
 fn render_import_report(cli: &Cli, report: &import::ImportReport) -> Result<()> {
@@ -727,13 +1185,13 @@ fn render_reports(cli: &Cli, reports: &[sync::SyncReport], dry_run: bool) -> Res
         if report.changes.is_empty() {
             println!(
                 "= {} already synchronized",
-                target_display_name(report.target)
+                target_display_name(&report.target)
             );
         } else {
             println!(
                 "{} {}: {} change(s)",
                 if dry_run { "dry-run" } else { "synchronized" },
-                target_display_name(report.target),
+                target_display_name(&report.target),
                 report.changes.len()
             );
         }
@@ -763,7 +1221,10 @@ fn render_inventory(plan: &crate::targets::TargetPlan) {
         }
     }
 
-    println!("\nOnly in {} (unmanaged)", target_display_name(plan.target));
+    println!(
+        "\nOnly in {} (unmanaged)",
+        target_display_name(&plan.target)
+    );
     render_names('+', &plan.inventory.only_in_target);
 
     println!("\nOnly in mcpd");

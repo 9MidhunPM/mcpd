@@ -3,7 +3,7 @@ use std::{sync::mpsc, time::Duration};
 use notify::{RecursiveMode, Watcher};
 
 use crate::{
-    Paths, config,
+    Paths,
     diagnostics::{McpdError, Result},
     sync,
 };
@@ -21,6 +21,16 @@ pub fn run(paths: &Paths) -> Result<()> {
     watcher
         .watch(parent, RecursiveMode::NonRecursive)
         .map_err(watch_error)?;
+    if let Some(project) = crate::resolve::current_project(paths)?
+        && project.trusted
+    {
+        if let Some(parent) = project.overlay.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| McpdError::io(parent, source))?;
+            watcher
+                .watch(parent, RecursiveMode::NonRecursive)
+                .map_err(watch_error)?;
+        }
+    }
     loop {
         receiver
             .recv()
@@ -30,8 +40,16 @@ pub fn run(paths: &Paths) -> Result<()> {
             })?
             .map_err(watch_error)?;
         while receiver.recv_timeout(Duration::from_millis(350)).is_ok() {}
-        let canonical = config::load(&paths.config)?;
-        sync::sync_enabled_targets(&canonical, paths, false)?;
+        match crate::resolve::load(paths)
+            .and_then(|resolved| sync::sync_enabled_targets(&resolved.config, paths, false))
+        {
+            Ok(reports) => {
+                tracing::info!(targets = reports.len(), "synchronization completed");
+            }
+            Err(error) => {
+                tracing::error!(%error, "watch synchronization failed; continuing to watch");
+            }
+        }
     }
 }
 

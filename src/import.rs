@@ -223,7 +223,7 @@ fn prepare(
 
     let canonical = config::plan_add_servers(&paths.config, &additions)?;
     Ok(PreparedImport {
-        target: imported.target.into(),
+        target: imported.target,
         target_path: imported.path.clone(),
         target_snapshot: imported.snapshot,
         canonical,

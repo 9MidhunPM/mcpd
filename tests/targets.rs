@@ -192,6 +192,110 @@ fn adapter_import_never_discards_native_oauth_or_disabled_semantics() {
     assert_eq!(fs::read(path).unwrap(), before);
 }
 
+#[test]
+fn jsonc_comments_trailing_commas_and_unmanaged_servers_survive_sync() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(&temp);
+    config::init(&paths.config).unwrap();
+    config::add_server(
+        &paths.config,
+        "managed",
+        &Server::Stdio {
+            command: "managed-command".into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            cwd: None,
+        },
+    )
+    .unwrap();
+    config::set_target_enabled(&paths.config, "cursor", true).unwrap();
+    let cursor = paths.target_config("cursor").unwrap();
+    fs::create_dir_all(cursor.parent().unwrap()).unwrap();
+    fs::write(
+        &cursor,
+        r#"{
+  // keep outer
+  "mcpServers": {
+    // keep unmanaged
+    "manual": { "command": "manual", },
+  },
+}"#,
+    )
+    .unwrap();
+
+    let canonical = config::load(&paths.config).unwrap();
+    sync::sync_enabled_targets(&canonical, &paths, false).unwrap();
+    let first = fs::read_to_string(&cursor).unwrap();
+    assert!(first.contains("// keep outer"));
+    assert!(first.contains("// keep unmanaged"));
+    assert!(first.contains(r#""manual": { "command": "manual", }"#));
+    assert!(first.contains("managed-command"));
+    sync::sync_enabled_targets(&canonical, &paths, false).unwrap();
+    assert_eq!(fs::read_to_string(&cursor).unwrap(), first);
+}
+
+#[test]
+fn declarative_jsonc_adapter_is_discovered_merge_safe_and_idempotent() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(&temp);
+    config::init(&paths.config).unwrap();
+    let manifests = paths.config.parent().unwrap().join("targets");
+    fs::create_dir_all(&manifests).unwrap();
+    fs::write(
+        manifests.join("banana.toml"),
+        r#"
+id = "banana"
+name = "Banana Code"
+platforms = ["linux"]
+
+[detect]
+commands = ["banana"]
+
+[config]
+path = "~/.banana/config.jsonc"
+format = "jsonc"
+servers_path = "mcp.servers"
+"#,
+    )
+    .unwrap();
+    config::add_server(
+        &paths.config,
+        "managed",
+        &Server::Stdio {
+            command: "banana-mcp".into(),
+            args: vec!["--safe".into()],
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            cwd: None,
+        },
+    )
+    .unwrap();
+    config::set_target_enabled(&paths.config, "banana", true).unwrap();
+    let target = paths.home.join(".banana/config.jsonc");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(
+        &target,
+        r#"{
+  // custom target setting
+  "theme": "yellow",
+  "mcp": { "servers": { "manual": { "command": "manual" } } }
+}"#,
+    )
+    .unwrap();
+
+    let canonical = config::load(&paths.config).unwrap();
+    let first = sync::sync_enabled_targets(&canonical, &paths, false).unwrap();
+    assert_eq!(first.len(), 1);
+    let rendered = fs::read_to_string(&target).unwrap();
+    assert!(rendered.contains("// custom target setting"));
+    assert!(rendered.contains(r#""manual": { "command": "manual" }"#));
+    assert!(rendered.contains("banana-mcp"));
+    let second = sync::sync_enabled_targets(&canonical, &paths, false).unwrap();
+    assert!(second[0].changes.is_empty());
+    assert_eq!(fs::read_to_string(target).unwrap(), rendered);
+}
+
 fn tree(temp: &TempDir) -> BTreeMap<PathBuf, Vec<u8>> {
     fn visit(root: &std::path::Path, at: &std::path::Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
         if let Ok(entries) = fs::read_dir(at) {

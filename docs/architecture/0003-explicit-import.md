@@ -1,6 +1,6 @@
 # ADR 0003: Explicit, lossless target import
 
-Status: accepted for the v0.1 discovery/adoption milestone
+Status: accepted for v1.0
 
 ## Decision
 

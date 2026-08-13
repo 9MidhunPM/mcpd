@@ -1,0 +1,16 @@
+version = 1
+
+# Disable a global server in this trusted project.
+[servers.context7]
+enabled = false
+
+# Add a project-only server.
+[servers.project-db]
+transport = "stdio"
+command = "project-db-mcp"
+
+[servers.project-db.env]
+DATABASE_TOKEN = { secret = "project.database-token" }
+
+[targets.codex.servers.project-db]
+enabled = true

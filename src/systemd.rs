@@ -13,17 +13,21 @@ pub fn unit_path(paths: &Paths) -> PathBuf {
 }
 
 pub fn install(paths: &Paths) -> Result<PathBuf> {
-    let executable =
-        std::env::current_exe().map_err(|source| McpdError::io("<current executable>", source))?;
-    let executable = systemd_quote(&executable.to_string_lossy());
-    let text = format!(
-        "[Unit]\nDescription=mcpd canonical MCP configuration watcher\n\n[Service]\nType=simple\nExecStart={} watch\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
-        executable
-    );
+    let text = generate()?;
     let path = unit_path(paths);
     ensure_safe_target_path(&path, &paths.home)?;
     atomic_write(&path, text.as_bytes(), Some(0o600))?;
     Ok(path)
+}
+
+pub fn generate() -> Result<String> {
+    let executable =
+        std::env::current_exe().map_err(|source| McpdError::io("<current executable>", source))?;
+    let executable = systemd_quote(&executable.to_string_lossy());
+    Ok(format!(
+        "[Unit]\nDescription=mcpd canonical MCP configuration watcher\n\n[Service]\nType=simple\nExecStart={} watch\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
+        executable
+    ))
 }
 
 fn systemd_quote(value: &str) -> String {

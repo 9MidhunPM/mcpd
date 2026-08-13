@@ -1,6 +1,6 @@
 # ADR 0002: Per-target filesystem transactions
 
-Status: accepted for the v0.1 vertical slice
+Status: accepted for v1.0
 
 ## Decision
 
@@ -17,4 +17,3 @@ Symbolic links in the Codex target path are rejected. The first slice does not o
 - Atomicity is per target, not across all future adapters.
 - A state-commit failure is recoverable without silently claiming an unrelated file.
 - A small residual race remains between final snapshot verification and atomic rename and is documented in the security model.
-

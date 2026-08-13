@@ -10,13 +10,29 @@ permissions:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-targets --all-features
-
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Check
+        run: cargo check --locked --all-targets --all-features
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Tests
+        run: cargo test --locked --all-targets --all-features
+      - name: Release build
+        run: cargo build --locked --release
+      - name: Cargo install smoke test
+        run: cargo install --locked --path . --root "${RUNNER_TEMP}/mcpd-install"
+      - name: CLI smoke tests
+        run: |
+          "${RUNNER_TEMP}/mcpd-install/bin/mcpd" --version
+          "${RUNNER_TEMP}/mcpd-install/bin/mcpd" completions bash > "${RUNNER_TEMP}/mcpd.bash"
+          test -s "${RUNNER_TEMP}/mcpd.bash"

@@ -1,6 +1,6 @@
 # ADR 0004: Keyring secrets and late stdio runtime injection
 
-Status: accepted for the v0.1 secure-secret milestone
+Status: accepted for v1.0
 
 ## Decision
 

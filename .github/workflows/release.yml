@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install native dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify tag matches crate version
+        run: test "${GITHUB_REF_NAME}" = "v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+      - name: Release checks
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-targets --all-features
+      - name: Build archive and checksums
+        run: |
+          cargo build --locked --release
+          mkdir -p dist/package
+          install -m 0755 target/release/mcpd dist/package/mcpd
+          install -m 0644 README.md LICENSE CHANGELOG.md dist/package/
+          archive="mcpd-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz"
+          tar -C dist/package -czf "dist/${archive}" .
+          cd dist
+          sha256sum "${archive}" > checksums.txt
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: mcpd-linux-x86_64
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          if-no-files-found: error
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/checksums.txt --verify-tag --generate-notes

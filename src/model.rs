@@ -76,6 +76,9 @@ impl Server {
 pub struct TargetConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// Optional client version supplied by the user for compatibility diagnostics.
+    #[serde(default)]
+    pub client_version: Option<String>,
     #[serde(default)]
     pub servers: BTreeMap<String, TargetServerConfig>,
 }

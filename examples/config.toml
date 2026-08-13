@@ -1,0 +1,20 @@
+version = 1
+
+[servers.context7]
+transport = "stdio"
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+
+[servers.docs]
+transport = "http"
+url = "https://example.com/mcp"
+
+[servers.docs.headers]
+Authorization = "${env:DOCS_TOKEN}"
+
+[targets.codex]
+enabled = true
+client_version = "1.0.0"
+
+[targets.cursor]
+enabled = true

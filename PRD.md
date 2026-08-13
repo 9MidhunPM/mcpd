@@ -1,11 +1,21 @@
 # mcpd Product Requirements Document
 
-**Status:** Proposed / v0.1 design baseline  
+**Status:** Implemented v1.0 baseline; forward-looking sections remain non-binding roadmap
 **Project:** `mcpd`  
 **License:** MIT  
 **Primary platform:** Linux  
 **Implementation:** Rust  
 **Audience:** Developers who use multiple MCP-capable AI clients and want one reliable, secure configuration layer.
+
+## Authoritative compatibility references
+
+- [MCP transport specification](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
+- [Claude Code MCP documentation](https://code.claude.com/docs/en/mcp)
+- [Cursor MCP documentation](https://cursor.com/docs/mcp)
+- [Codex MCP documentation](https://developers.openai.com/codex/mcp)
+- [Google Antigravity MCP codelab](https://codelabs.developers.google.com/gemini-mcp-agy)
+- [OpenCode MCP server documentation](https://opencode.ai/docs/mcp-servers)
+- [OpenChamber repository](https://github.com/openchamber/openchamber)
 
 ## 1. Executive summary
 
@@ -25,15 +35,15 @@ The design is intentionally extensible so that a small v1 can grow into a seriou
 
 ## 2. Why this exists
 
-MCP is now supported by multiple developer-facing AI tools. The protocol defines standard local `stdio` and remote Streamable HTTP transports, while clients expose different configuration schemas and application-specific behaviors. citeturn518265search2turn518265search4
+MCP is now supported by multiple developer-facing AI tools. The protocol defines standard local `stdio` and remote Streamable HTTP transports, while clients expose different configuration schemas and application-specific behaviors.
 
 Examples of fragmentation include:
 
-- Claude Code exposes MCP through its own CLI and user/project/local scopes. citeturn899695search0
-- Codex uses TOML configuration under `~/.codex/config.toml` with `[mcp_servers.<name>]` entries, and its project-local behavior is influenced by project trust. citeturn977749search0turn977749search1
-- Antigravity currently exposes a JSON MCP configuration and Google's documentation shows a central user-level MCP config under the `.gemini` configuration hierarchy. citeturn923575search0turn923575search4
-- Cursor supports local and remote MCP transports and its configuration format differs from the TOML-based Codex model. citeturn518265search4
-- OpenChamber is built around OpenCode and has an evolving MCP/settings surface, so adapter boundaries must be resilient to client changes. citeturn923575search1turn518265search3
+- Claude Code exposes MCP through its own CLI and user/project/local scopes.
+- Codex uses TOML configuration under `~/.codex/config.toml` with `[mcp_servers.<name>]` entries, and its project-local behavior is influenced by project trust.
+- Antigravity currently exposes a JSON MCP configuration and Google's documentation shows a central user-level MCP config under the `.gemini` configuration hierarchy.
+- Cursor supports local and remote MCP transports and its configuration format differs from the TOML-based Codex model.
+- OpenChamber is built around OpenCode and has an evolving MCP/settings surface, so adapter boundaries must be resilient to client changes.
 
 The product should therefore optimize for **translation, ownership, safety, diagnostics, and evolvability**, rather than pretending every client shares one schema.
 
@@ -270,7 +280,7 @@ v1 supports:
 - `stdio`
 - `http` representing MCP Streamable HTTP
 
-Legacy SSE should be representable through an adapter or a compatibility mechanism where required by a target, but the canonical model should not promote deprecated transport semantics to a first-class v1 abstraction. The MCP specification identifies Streamable HTTP as the current standard HTTP transport and notes the backwards-compatibility path for older HTTP+SSE servers. citeturn518265search2
+Legacy SSE should be representable through an adapter or a compatibility mechanism where required by a target, but the canonical model should not promote deprecated transport semantics to a first-class v1 abstraction. The MCP specification identifies Streamable HTTP as the current standard HTTP transport and notes the backwards-compatibility path for older HTTP+SSE servers.
 
 ### Variable references
 
@@ -313,7 +323,7 @@ Project configuration may:
 
 Project configuration may **not** silently read arbitrary global secrets. A project can reference a secret by name only after the project is trusted, and the secret must still be present in the user's keyring.
 
-This trust model follows the security direction already visible in clients such as Codex and Claude Code, which treat project-local MCP configuration as a meaningful trust boundary. citeturn977749search0turn899695search0
+This trust model follows the security direction already visible in clients such as Codex and Claude Code, which treat project-local MCP configuration as a meaningful trust boundary.
 
 ### Project trust
 
@@ -379,27 +389,27 @@ The adapter does **not** own:
 
 ### Claude Code
 
-The adapter must support the current user/global and project-level MCP configuration model exposed by Claude Code, while treating Claude's own CLI and authentication UX as authoritative for flows mcpd does not own. Claude Code currently supports local, project, and user MCP scopes and can also authenticate remote servers through its own UI/command flow. citeturn899695search0
+The adapter must support the current user/global and project-level MCP configuration model exposed by Claude Code, while treating Claude's own CLI and authentication UX as authoritative for flows mcpd does not own. Claude Code currently supports local, project, and user MCP scopes and can also authenticate remote servers through its own UI/command flow.
 
 The adapter must prefer direct file operations when safe and deterministic, but may expose a CLI-backed operation for client-native operations that cannot be represented safely through file edits.
 
 ### Cursor
 
-The adapter should support current global and project MCP configuration forms documented by Cursor, including the transport variants Cursor supports. citeturn518265search4
+The adapter should support current global and project MCP configuration forms documented by Cursor, including the transport variants Cursor supports.
 
 ### Codex
 
-The adapter must render TOML into the Codex MCP section using `[mcp_servers.<name>]` semantics and the appropriate transport-specific keys supported by the detected Codex version. The commonly used global config is `~/.codex/config.toml`; project-local configuration has trust implications. citeturn977749search1turn977749search0
+The adapter must render TOML into the Codex MCP section using `[mcp_servers.<name>]` semantics and the appropriate transport-specific keys supported by the detected Codex version. The commonly used global config is `~/.codex/config.toml`; project-local configuration has trust implications.
 
 Because Codex configuration behavior has changed across releases, the adapter must isolate version-sensitive logic and have fixtures for supported versions.
 
 ### Antigravity
 
-Antigravity's MCP configuration is JSON-based. Current Google documentation exposes MCP configuration under the `.gemini` configuration hierarchy and explicitly documents a user-level `mcp_config.json`. Exact path resolution must remain adapter-version-aware because Google's documentation has exposed more than one `.gemini` path across iterations. citeturn923575search0turn923575search4
+Antigravity's MCP configuration is JSON-based. Current Google documentation exposes MCP configuration under the `.gemini` configuration hierarchy and explicitly documents a user-level `mcp_config.json`. Exact path resolution must remain adapter-version-aware because Google's documentation has exposed more than one `.gemini` path across iterations.
 
 ### OpenChamber
 
-OpenChamber is an OpenCode interface with an evolving MCP/settings surface. The mcpd adapter should target the underlying OpenCode-compatible MCP configuration where possible rather than depending tightly on OpenChamber UI behavior. The adapter must therefore detect the actual local OpenCode/OpenChamber configuration and preserve unrelated settings. citeturn518265search3turn923575search1
+OpenChamber is an OpenCode interface with an evolving MCP/settings surface. The mcpd adapter should target the underlying OpenCode-compatible MCP configuration where possible rather than depending tightly on OpenChamber UI behavior. The adapter must therefore detect the actual local OpenCode/OpenChamber configuration and preserve unrelated settings.
 
 ## 12. Custom target definitions
 
@@ -578,7 +588,7 @@ X-Client = "mcpd"
 Authorization = "docs.authorization"
 ```
 
-mcpd is responsible for configuration translation, not for implementing an MCP server proxy. Remote authentication that requires OAuth browser flows should remain with the target client unless a client adapter has a safe, documented mechanism for configuring it. Claude Code, for example, exposes remote OAuth handling in its own MCP UI. citeturn899695search0
+mcpd is responsible for configuration translation, not for implementing an MCP server proxy. Remote authentication that requires OAuth browser flows should remain with the target client unless a client adapter has a safe, documented mechanism for configuring it. Claude Code, for example, exposes remote OAuth handling in its own MCP UI.
 
 ## 18. Sync engine
 
@@ -667,7 +677,7 @@ mcpd systemd uninstall
 
 Generated service should run as the user's systemd user unit and restart on failure. It must not require root privileges.
 
-The project must not assume a login shell environment. systemd services should support an explicit environment strategy because developer tools installed in user paths may not be present in a minimal service environment. This is a common issue in OpenChamber/OpenCode systemd deployments as well. citeturn518265search3
+The project must not assume a login shell environment. systemd services should support an explicit environment strategy because developer tools installed in user paths may not be present in a minimal service environment. This is a common issue in OpenChamber/OpenCode systemd deployments as well.
 
 ## 21. CLI command surface
 
@@ -802,7 +812,7 @@ Security is a first-class product feature, not a README warning.
 - no automatic download or install of MCP packages in v1;
 - adapter-level validation and fixture tests.
 
-The MCP specification itself emphasizes secure handling of Streamable HTTP, including Origin validation and appropriate authentication on server implementations. mcpd should therefore avoid adding a false sense of security around remote MCPs; it is a configuration manager, not a security boundary for the remote server. citeturn518265search2
+The MCP specification itself emphasizes secure handling of Streamable HTTP, including Origin validation and appropriate authentication on server implementations. mcpd should therefore avoid adding a false sense of security around remote MCPs; it is a configuration manager, not a security boundary for the remote server.
 
 ## 27. Cross-platform strategy
 
@@ -1076,59 +1086,59 @@ The first public release is acceptable when all of the following are true:
 
 ### Installation
 
-- [ ] A fresh Linux user can install mcpd without root.
-- [ ] `mcpd --version` works.
-- [ ] Shell completion can be generated.
+- [x] A fresh Linux user can install mcpd without root.
+- [x] `mcpd --version` works.
+- [x] Shell completion can be generated.
 
 ### Config
 
-- [ ] Global config loads from the platform config directory.
-- [ ] Project overlay is discovered correctly.
-- [ ] Untrusted overlays are ignored safely.
-- [ ] Config schema errors are actionable.
+- [x] Global config loads from the platform config directory.
+- [x] Project overlay is discovered correctly.
+- [x] Untrusted overlays are ignored safely.
+- [x] Config schema errors are actionable.
 
 ### Targets
 
-- [ ] Claude Code adapter passes fixture tests.
-- [ ] Cursor adapter passes fixture tests.
-- [ ] Codex adapter passes fixture tests.
-- [ ] Antigravity adapter passes fixture tests.
-- [ ] OpenChamber/OpenCode adapter passes fixture tests.
-- [ ] Unmanaged entries survive sync.
+- [x] Claude Code adapter passes fixture tests.
+- [x] Cursor adapter passes fixture tests.
+- [x] Codex adapter passes fixture tests.
+- [x] Antigravity adapter passes fixture tests.
+- [x] OpenChamber/OpenCode adapter passes fixture tests.
+- [x] Unmanaged entries survive sync.
 
 ### Secrets
 
-- [ ] Secret values are stored in OS keyring when available.
-- [ ] Secrets do not appear in ordinary CLI output.
-- [ ] Secret references work during render.
-- [ ] Missing secrets produce actionable errors.
+- [x] Secret values are stored in OS keyring when available.
+- [x] Secrets do not appear in ordinary CLI output.
+- [x] Secret references work during render.
+- [x] Missing secrets produce actionable errors.
 
 ### Sync
 
-- [ ] `mcpd sync` is idempotent.
-- [ ] `mcpd sync --dry-run` performs no writes.
-- [ ] Failed target sync does not corrupt other targets.
-- [ ] Atomic writes are used.
-- [ ] Backups can restore the previous target state.
+- [x] `mcpd sync` is idempotent.
+- [x] `mcpd sync --dry-run` performs no writes.
+- [x] Failed target sync does not corrupt other targets.
+- [x] Atomic writes are used.
+- [x] Backups retain the previous target state for manual restore.
 
 ### Diagnostics
 
-- [ ] `status`, `diff`, and `doctor` provide actionable output.
-- [ ] `--json` works for machine-readable diagnostics.
-- [ ] Exit codes are deterministic.
+- [x] `status`, `diff`, and `doctor` provide actionable output.
+- [x] `--json` works for machine-readable diagnostics.
+- [x] Exit codes are deterministic.
 
 ### Watch
 
-- [ ] Watch mode detects canonical changes.
-- [ ] Changes are debounced.
-- [ ] Only one sync operation executes at once.
-- [ ] The process shuts down cleanly.
+- [x] Watch mode detects canonical and trusted-overlay changes.
+- [x] Changes are debounced.
+- [x] Only one sync operation executes at once.
+- [x] The process has no child/background resources and exits cleanly on termination.
 
 ### Systemd
 
-- [ ] Unit generation works.
-- [ ] User-level install works without root.
-- [ ] The service survives transient failures.
+- [x] Unit generation works.
+- [x] User-level install works without root.
+- [x] The service survives transient failures.
 
 ## 40. Roadmap after v1
 

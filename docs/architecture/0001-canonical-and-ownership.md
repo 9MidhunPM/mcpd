@@ -1,6 +1,6 @@
 # ADR 0001: Canonical schema and external ownership state
 
-Status: accepted for the v0.1 vertical slice
+Status: accepted for v1.0
 
 ## Decision
 

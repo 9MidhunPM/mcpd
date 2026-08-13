@@ -8,7 +8,7 @@ use crate::{
 };
 
 pub fn execute(server_name: &str, paths: &Paths) -> Result<()> {
-    let config = crate::config::load(&paths.config)?;
+    let config = crate::resolve::load(paths)?.config;
     let server = config
         .servers
         .get(server_name)
@@ -70,7 +70,14 @@ fn resolve_environment(
                 ConfigValue::Literal(value) => {
                     resolve_environment_reference(server_name, name, value)?
                 }
-                ConfigValue::Secret { .. } => unreachable!("secret reference handled above"),
+                ConfigValue::Secret { .. } => {
+                    return Err(McpdError::Operational {
+                        message: format!(
+                            "secret reference for server `{server_name}` was not resolved"
+                        ),
+                        hint: "report this as an mcpd bug".into(),
+                    });
+                }
             }
         };
         resolved.insert(name.clone(), value);

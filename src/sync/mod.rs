@@ -21,22 +21,132 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncReport {
-    pub target: &'static str,
+    pub target: String,
     pub path: PathBuf,
     pub dry_run: bool,
     pub changes: Vec<crate::targets::Change>,
 }
 
-pub fn enabled_targets(config: &CanonicalConfig) -> Vec<&'static str> {
-    targets::TARGET_IDS
-        .iter()
-        .copied()
-        .filter(|id| config.targets.get(*id).is_some_and(|target| target.enabled))
-        .collect()
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncFailure {
+    pub target: String,
+    pub error: String,
+    pub hint: Option<String>,
+    pub exit_code: i32,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SyncBatch {
+    pub reports: Vec<SyncReport>,
+    pub failures: Vec<SyncFailure>,
+}
+
+impl SyncBatch {
+    pub fn into_result(self) -> Result<Vec<SyncReport>> {
+        if self.failures.is_empty() {
+            return Ok(self.reports);
+        }
+        let summary = self
+            .failures
+            .iter()
+            .map(|failure| {
+                format!(
+                    "{}: {}",
+                    targets::display_name(&failure.target),
+                    failure.error
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let message = format!(
+            "{} target synchronization(s) failed: {summary}",
+            self.failures.len()
+        );
+        let mut hints = self
+            .failures
+            .iter()
+            .filter_map(|failure| failure.hint.clone())
+            .collect::<Vec<_>>();
+        hints.sort();
+        hints.dedup();
+        hints.push(
+            "successful targets were kept; fix the reported targets and rerun `mcpd sync`".into(),
+        );
+        let hint = hints.join("; ");
+        match self.failures[0].exit_code {
+            2 => Err(McpdError::InvalidInput { message, hint }),
+            3 => Err(McpdError::TargetUnavailable {
+                target: self.failures[0].target.clone(),
+                message,
+                hint,
+            }),
+            4 => Err(McpdError::Conflict { message, hint }),
+            5 => Err(McpdError::Security {
+                path: PathBuf::from("<multiple targets>"),
+                message,
+                hint,
+            }),
+            _ => Err(McpdError::Operational { message, hint }),
+        }
+    }
+}
+
+pub fn enabled_targets(config: &CanonicalConfig, _paths: &Paths) -> Result<Vec<String>> {
+    let mut enabled = Vec::new();
+    for (id, target) in &config.targets {
+        if target.enabled {
+            enabled.push(id.clone());
+        }
+    }
+    enabled.sort_by_key(|id| {
+        targets::TARGET_IDS
+            .iter()
+            .position(|candidate| candidate == id)
+            .unwrap_or(usize::MAX)
+    });
+    Ok(enabled)
+}
+
+fn selected_targets<'a>(
+    config: &CanonicalConfig,
+    _paths: &Paths,
+    selected: &'a [String],
+) -> Result<Vec<&'a str>> {
+    let mut result = Vec::new();
+    for target in selected {
+        if !config
+            .targets
+            .get(target)
+            .is_some_and(|target| target.enabled)
+        {
+            return Err(McpdError::InvalidInput {
+                message: format!("target `{target}` is not enabled"),
+                hint: format!("run `mcpd targets enable {target}` first"),
+            });
+        }
+        if !result.contains(&target.as_str()) {
+            result.push(target.as_str());
+        }
+    }
+    Ok(result)
 }
 
 pub fn plan_enabled_targets(config: &CanonicalConfig, paths: &Paths) -> Result<Vec<TargetPlan>> {
-    enabled_targets(config)
+    enabled_targets(config, paths)?
+        .into_iter()
+        .map(|target| plan_target(&target, config, paths))
+        .collect()
+}
+
+pub fn plan_selected_targets(
+    config: &CanonicalConfig,
+    paths: &Paths,
+    selected: &[String],
+) -> Result<Vec<TargetPlan>> {
+    if selected.is_empty() {
+        return plan_enabled_targets(config, paths);
+    }
+    selected_targets(config, paths, selected)?
         .into_iter()
         .map(|target| plan_target(target, config, paths))
         .collect()
@@ -47,10 +157,64 @@ pub fn sync_enabled_targets(
     paths: &Paths,
     dry_run: bool,
 ) -> Result<Vec<SyncReport>> {
-    enabled_targets(config)
+    sync_targets_isolated(config, paths, &enabled_targets(config, paths)?, dry_run).into_result()
+}
+
+pub fn sync_selected_targets(
+    config: &CanonicalConfig,
+    paths: &Paths,
+    selected: &[String],
+    dry_run: bool,
+) -> Result<Vec<SyncReport>> {
+    if selected.is_empty() {
+        return sync_enabled_targets(config, paths, dry_run);
+    }
+    let selected = selected_targets(config, paths, selected)?
         .into_iter()
-        .map(|target| sync_target(target, config, paths, dry_run))
-        .collect()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    sync_targets_isolated(config, paths, &selected, dry_run).into_result()
+}
+
+pub fn sync_selected_targets_isolated(
+    config: &CanonicalConfig,
+    paths: &Paths,
+    selected: &[String],
+    dry_run: bool,
+) -> Result<SyncBatch> {
+    let targets = if selected.is_empty() {
+        enabled_targets(config, paths)?
+    } else {
+        selected_targets(config, paths, selected)?
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    };
+    Ok(sync_targets_isolated(config, paths, &targets, dry_run))
+}
+
+fn sync_targets_isolated(
+    config: &CanonicalConfig,
+    paths: &Paths,
+    targets: &[String],
+    dry_run: bool,
+) -> SyncBatch {
+    let mut batch = SyncBatch::default();
+    for target in targets {
+        match sync_target(target, config, paths, dry_run) {
+            Ok(report) => batch.reports.push(report),
+            Err(error) => {
+                let exit_code = crate::diagnostics::ExitCode::from(&error) as i32;
+                batch.failures.push(SyncFailure {
+                    target: target.clone(),
+                    error: error.to_string(),
+                    hint: error.hint().map(str::to_owned),
+                    exit_code,
+                });
+            }
+        }
+    }
+    batch
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -92,7 +256,7 @@ fn sync_target(
             plan.next_state.last_success_unix_ms = now_ms()?;
             state_file
                 .targets
-                .insert(plan.target.into(), plan.next_state.clone());
+                .insert(plan.target.clone(), plan.next_state.clone());
             state::save(&state_path, &state_file)?;
             return Ok(report(&plan, false));
         }
@@ -102,7 +266,7 @@ fn sync_target(
         plan.next_state.last_success_unix_ms = now_ms()?;
         let pending = PendingTransaction {
             version: 1,
-            target: plan.target.into(),
+            target: plan.target.clone(),
             target_path: plan.path.clone(),
             pre_hash: plan.before.as_deref().map(fs::hash_bytes),
             desired_hash: fs::hash_bytes(&plan.rendered),
@@ -112,7 +276,7 @@ fn sync_target(
         fs::atomic_write(&plan.path, &plan.rendered, None)?;
         state_file
             .targets
-            .insert(plan.target.into(), plan.next_state.clone());
+            .insert(plan.target.clone(), plan.next_state.clone());
         state::save(&state_path, &state_file)?;
         remove_pending(paths)?;
         Ok(report(&plan, false))
@@ -122,6 +286,7 @@ fn sync_target(
 pub(crate) fn with_sync_lock<T>(paths: &Paths, operation: impl FnOnce() -> Result<T>) -> Result<T> {
     ensure_private_dir(&paths.state_dir)?;
     let lock_path = paths.state_dir.join("sync.lock");
+    reject_symlink_lock(&lock_path)?;
     let lock = stdfs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -137,9 +302,42 @@ pub(crate) fn with_sync_lock<T>(paths: &Paths, operation: impl FnOnce() -> Resul
     operation()
 }
 
+pub fn lock_status(paths: &Paths) -> Result<&'static str> {
+    let lock_path = paths.state_dir.join("sync.lock");
+    match stdfs::symlink_metadata(&lock_path) {
+        Ok(_) => reject_symlink_lock(&lock_path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok("absent"),
+        Err(source) => return Err(McpdError::io(&lock_path, source)),
+    }
+    let lock = stdfs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|source| McpdError::io(&lock_path, source))?;
+    match lock.try_lock_exclusive() {
+        Ok(()) => {
+            fs2::FileExt::unlock(&lock).map_err(|source| McpdError::io(&lock_path, source))?;
+            Ok("available")
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok("active"),
+        Err(source) => Err(McpdError::io(&lock_path, source)),
+    }
+}
+
+fn reject_symlink_lock(lock_path: &Path) -> Result<()> {
+    if stdfs::symlink_metadata(lock_path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(McpdError::Security {
+            path: lock_path.to_path_buf(),
+            message: "sync lock is a symbolic link".into(),
+            hint: "remove the unexpected symlink before running mutating commands".into(),
+        });
+    }
+    Ok(())
+}
+
 fn report(plan: &TargetPlan, dry_run: bool) -> SyncReport {
     SyncReport {
-        target: plan.target,
+        target: plan.target.clone(),
         path: plan.path.clone(),
         dry_run,
         changes: plan.changes.clone(),
@@ -150,7 +348,7 @@ fn backup(plan: &TargetPlan, state_dir: &Path) -> Result<()> {
     let Some(before) = &plan.before else {
         return Ok(());
     };
-    let dir = state_dir.join("backups").join(plan.target);
+    let dir = state_dir.join("backups").join(&plan.target);
     ensure_private_dir(&dir)?;
     let stamp = now_ms()?;
     let mut selected = None;
@@ -194,6 +392,14 @@ fn verify_snapshot(plan: &TargetPlan) -> Result<()> {
 }
 
 pub(crate) fn ensure_private_dir(path: &Path) -> Result<()> {
+    if stdfs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(McpdError::Security {
+            path: path.to_path_buf(),
+            message: "private state directory is a symbolic link".into(),
+            hint: "replace it with a regular private directory before allowing mcpd to write state"
+                .into(),
+        });
+    }
     stdfs::create_dir_all(path).map_err(|source| McpdError::io(path, source))?;
     stdfs::set_permissions(path, stdfs::Permissions::from_mode(0o700))
         .map_err(|source| McpdError::io(path, source))
@@ -235,7 +441,7 @@ fn recover_pending(paths: &Paths) -> Result<()> {
             hint: "inspect the target and state before removing the pending transaction manually"
                 .into(),
         })?;
-    if pending.version != 1 || !targets::TARGET_IDS.contains(&pending.target.as_str()) {
+    if pending.version != 1 || targets::adapter(&pending.target, paths).is_err() {
         return Err(McpdError::InvalidInput {
             message: "unsupported pending transaction record".into(),
             hint: "use a compatible mcpd version".into(),
@@ -325,5 +531,29 @@ mod tests {
             next_state
         );
         assert!(!pending_path(&paths).exists());
+    }
+
+    #[test]
+    fn advisory_lock_status_distinguishes_active_and_released_locks() {
+        let temp = TempDir::new().unwrap();
+        let paths = Paths {
+            config: temp.path().join("config.toml"),
+            state_dir: temp.path().join("state"),
+            codex_config: temp.path().join("home/.codex/config.toml"),
+            home: temp.path().join("home"),
+        };
+        ensure_private_dir(&paths.state_dir).unwrap();
+        let lock_path = paths.state_dir.join("sync.lock");
+        let lock = stdfs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        assert_eq!(lock_status(&paths).unwrap(), "active");
+        drop(lock);
+        assert_eq!(lock_status(&paths).unwrap(), "available");
     }
 }

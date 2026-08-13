@@ -33,7 +33,7 @@ impl CodexAdapter {
 }
 
 impl TargetAdapter for CodexAdapter {
-    fn id(&self) -> &'static str {
+    fn id(&self) -> &str {
         "codex"
     }
     fn adapter_version(&self) -> u32 {
@@ -50,6 +50,9 @@ impl TargetAdapter for CodexAdapter {
             stdio: StdioSecretCapability::RuntimeInjection,
             http: HttpSecretCapability::EnvironmentReference,
         }
+    }
+    fn native_schema(&self) -> &'static str {
+        "codex.toml/mcp_servers"
     }
 
     fn server_names(&self) -> Result<Vec<String>> {
@@ -198,7 +201,7 @@ impl TargetAdapter for CodexAdapter {
             );
         }
         Ok(TargetImport {
-            target: self.id(),
+            target: self.id().into(),
             path: self.path.clone(),
             snapshot,
             servers,
@@ -336,7 +339,7 @@ impl TargetAdapter for CodexAdapter {
                 || state.managed != managed
         });
         Ok(TargetPlan {
-            target: self.id(),
+            target: self.id().into(),
             path: self.path.clone(),
             before,
             rendered,
@@ -686,7 +689,10 @@ fn render_server(name: &str, server: &Server) -> Result<Item> {
             let mut forwarded_env = Vec::new();
             for (key, value_) in env {
                 let ConfigValue::Literal(value_) = value_ else {
-                    unreachable!("secret references use the mcpd exec wrapper")
+                    return Err(McpdError::Operational {
+                        message: format!("secret reference for `{name}` escaped runtime wrapping"),
+                        hint: "report this as an mcpd bug".into(),
+                    });
                 };
                 if let Some(source) = env_reference(value_)? {
                     if source != key {
@@ -746,7 +752,10 @@ fn render_server(name: &str, server: &Server) -> Result<Item> {
                     });
                 }
                 let ConfigValue::Literal(value_) = value_ else {
-                    unreachable!("structured secret reference handled above")
+                    return Err(McpdError::Operational {
+                        message: format!("secret HTTP header for `{name}` escaped validation"),
+                        hint: "report this as an mcpd bug".into(),
+                    });
                 };
                 if let Some(source) = env_reference(value_)? {
                     forwarded_headers.insert(header, source);

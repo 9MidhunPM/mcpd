@@ -2,7 +2,7 @@
 
 `mcpd` is a local MCP configuration control plane: configure an MCP server once, then safely project it into supported clients without deleting configuration that `mcpd` does not own.
 
-The Linux v0.1 implementation supports global canonical configuration, Codex, Claude Code, Cursor, Antigravity, and OpenChamber through OpenCode. It includes stdio and Streamable HTTP servers, safe import and synchronization, OS-keyring secrets, runtime secret injection, discovery, watch mode, user-level systemd integration, and shell completions.
+The Linux v1.0 implementation supports global and trusted project configuration, Codex, Claude Code, Cursor, Antigravity, and OpenChamber through OpenCode. It includes stdio and Streamable HTTP servers, safe import and synchronization, JSONC-aware edits, OS-keyring secrets, runtime secret injection, declarative custom targets, discovery, watch mode, user-level systemd integration, and shell completions.
 
 ## Scope
 
@@ -24,6 +24,18 @@ cargo test --all-targets --all-features
 ```
 
 Rust 1.85 or newer is required.
+
+Install from source without root:
+
+```sh
+cargo install --locked --path .
+```
+
+Tagged Linux x86_64 releases include a checksum-verified installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/9MidhunPM/mcpd/v1.0.0/scripts/install.sh | sh
+```
 
 ## Quick start
 
@@ -82,6 +94,50 @@ Import accepts stdio `command`, `args`, `cwd`, local `env`, and `env_vars`, plus
 
 `mcpd status` gives a compact per-target overview with enabled state, synchronization state, pending change count, and managed/unmanaged counts. It is read-only and does not enable or reconcile targets.
 
+`status`, `diff`, `sync`, and `doctor` accept repeatable target filters. `diff` and `sync` require selected targets to be enabled; `status` and `doctor` may inspect disabled targets:
+
+```sh
+mcpd status --target codex --target cursor
+mcpd diff --target codex
+mcpd sync --target codex --target cursor --dry-run
+mcpd doctor --target claude
+```
+
+`doctor` is static by default and never starts clients or MCP servers. Use `mcpd doctor --network` to explicitly request three-second DNS/TCP reachability checks for configured HTTP endpoints.
+
+Multi-target synchronization is failure-isolated. If one client is malformed, other selected clients are still attempted and successful writes remain committed; the command exits non-zero and reports every failed target.
+
+## Project overlays and trust
+
+`mcpd` discovers `<repo-root>/.mcpd/config.toml` by walking from the current directory to a Git or mcpd project root. An overlay is ignored until its canonical project directory is explicitly trusted:
+
+```sh
+cd /path/to/project
+mcpd trust
+mcpd trust --list
+mcpd trust --revoke /path/to/project
+```
+
+Trusted overlays may add or completely replace servers, disable a global server with `enabled = false`, and override target enablement/server selection. They never mutate the global canonical file. Secret references in untrusted overlays are never resolved. See [the overlay example](examples/project-overlay.toml) and [ADR 0005](docs/architecture/0005-project-trust-and-declarative-targets.md).
+
+Claude Code exposes three explicit target IDs so scope is never inferred:
+
+```sh
+mcpd targets enable claude          # user scope: ~/.claude.json
+mcpd targets enable claude-project  # shared scope: <project>/.mcp.json
+mcpd targets enable claude-local    # private project entry in ~/.claude.json
+```
+
+Project and local Claude scopes require a current trusted project. Claude's own project MCP approval remains authoritative.
+
+## Declarative custom targets
+
+Simple JSON/JSONC clients can be added with manifests under `~/.config/mcpd/targets/*.toml`. A v1 manifest declares a unique ID, optional detection commands, an absolute or `~/...` configuration path, and a dot-separated server object path. See [the complete example](examples/declarative-target.toml).
+
+Declarative adapters are intentionally export-only in v1. They preserve unmanaged entries and comments, support stdio (including `mcpd exec` for secrets) and literal Streamable HTTP configuration, and reject client-specific HTTP placeholder/auth behavior rather than guessing. Complex or import-capable clients belong in compiled adapters.
+
+Built-in JSON adapters accept JSONC comments and trailing commas. Synchronization edits only mcpd-owned server values and necessary path objects, retaining unrelated settings, unmanaged server text, and surrounding comments. Duplicate keys fail closed.
+
 ## Environment references
 
 References remain symbolic in canonical configuration:
@@ -100,16 +156,17 @@ Store and inspect secrets without revealing them:
 mcpd secret set github.token
 mcpd secret list
 mcpd secret check github.token
+mcpd secret get github.token --reveal
 mcpd secret delete github.token
 ```
 
-`secret set` reads from a no-echo terminal prompt. There is intentionally no command that prints a value. Only secret names are recorded under mcpd state; values remain in the OS keyring.
+`secret set` reads from a no-echo terminal prompt. Raw values are printed only by the explicit `get --reveal` form, which warns on stderr and rejects `--json`/`--quiet`; ordinary output never reveals them. Only secret names are recorded under mcpd state; values remain in the OS keyring.
 
 For secret-bearing stdio servers, targets receive an `mcpd exec SERVER` runtime wrapper. `mcpd exec` reads the keyring at the last possible moment and injects values only into the real child process. HTTP environment references use each target's native syntax where documented; keyring-backed HTTP secrets are rejected when a client cannot resolve them without copying the value.
 
 ## Watch, systemd, and completions
 
-Run `mcpd watch` in the foreground to synchronize enabled targets after debounced canonical-config changes. On Linux, `mcpd systemd install` writes a user unit and reloads the user manager; start it explicitly with:
+Run `mcpd watch` in the foreground to synchronize enabled targets after debounced canonical-config and trusted-overlay changes. A transient parse/sync failure is logged and the watcher continues. On Linux, inspect the exact unit with `mcpd systemd generate`; `mcpd systemd install` writes the user unit and reloads the user manager. Start it explicitly with:
 
 ```sh
 systemctl --user enable --now mcpd-watch.service
@@ -121,6 +178,8 @@ OS-keyring secret references for HTTP headers are rejected because Codex cannot 
 
 ## Test path overrides
 
-`MCPD_CONFIG`, `MCPD_STATE_DIR`, `MCPD_HOME`, and `MCPD_<TARGET>_CONFIG` override discovered paths. They are intended for isolated tests and advanced packaging; target paths must remain under `MCPD_HOME`.
+`MCPD_CONFIG`, `MCPD_STATE_DIR`, `MCPD_HOME`, `MCPD_PROJECT_ROOT`, and `MCPD_<TARGET>_CONFIG` override discovered paths. They are intended for isolated tests and advanced packaging. User target paths must remain under `MCPD_HOME`; the trusted Claude project file is confined to the trusted project root.
 
-See [PRD.md](PRD.md), [SECURITY.md](SECURITY.md), and [docs/architecture](docs/architecture) for the product and safety model.
+An optional `client_version = "..."` under a target records the client version used for compatibility diagnostics without executing client binaries during discovery. Native schema/version incompatibilities still fail inside the owning adapter before writes.
+
+See [PRD.md](PRD.md), [SECURITY.md](SECURITY.md), [packaging guidance](docs/packaging.md), and [docs/architecture](docs/architecture) for the product and safety model.

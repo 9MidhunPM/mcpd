@@ -5,6 +5,7 @@ pub mod execution;
 pub mod import;
 pub mod model;
 pub mod output;
+pub mod resolve;
 pub mod secrets;
 pub mod state;
 pub mod sync;

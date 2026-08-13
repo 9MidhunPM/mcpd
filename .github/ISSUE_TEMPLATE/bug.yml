@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible mcpd defect without including secrets.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not paste credentials or real secret-bearing MCP configuration."
+  - type: input
+    id: version
+    attributes:
+      label: mcpd version
+      placeholder: "mcpd 1.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: Target
+      options: [Claude Code, Cursor, Codex, Antigravity, OpenChamber/OpenCode, Custom declarative target, Core/other]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Use sanitized temporary paths and placeholder values.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true

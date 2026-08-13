@@ -1,10 +1,12 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
+use serde::Deserialize;
+
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value, value};
 
 use crate::{
     diagnostics::{McpdError, Result},
-    model::{CanonicalConfig, ConfigValue, Server},
+    model::{CanonicalConfig, ConfigValue, Server, TargetServerConfig},
     sync::fs::atomic_write,
 };
 
@@ -31,6 +33,99 @@ pub fn parse(text: &str, path: &Path) -> Result<CanonicalConfig> {
     Ok(config)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectOverlay {
+    version: u32,
+    #[serde(default)]
+    servers: BTreeMap<String, toml::Value>,
+    #[serde(default)]
+    targets: BTreeMap<String, OverlayTarget>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OverlayTarget {
+    enabled: Option<bool>,
+    client_version: Option<String>,
+    #[serde(default)]
+    servers: BTreeMap<String, TargetServerConfig>,
+}
+
+pub fn apply_overlay(global: &CanonicalConfig, path: &Path) -> Result<CanonicalConfig> {
+    let text = fs::read_to_string(path).map_err(|source| McpdError::io(path, source))?;
+    let overlay: ProjectOverlay =
+        toml::from_str(&text).map_err(|error| McpdError::InvalidInput {
+            message: format!("project overlay {} is invalid: {error}", path.display()),
+            hint: "repair the trusted project overlay; the global configuration was not modified"
+                .into(),
+        })?;
+    if overlay.version != 1 {
+        return Err(McpdError::InvalidInput {
+            message: format!(
+                "project overlay {} uses unsupported schema version {}",
+                path.display(),
+                overlay.version
+            ),
+            hint: "mcpd 1.x supports only `version = 1` and never migrates implicitly".into(),
+        });
+    }
+
+    let mut resolved = global.clone();
+    for (name, value) in overlay.servers {
+        if !is_valid_server_id(&name) {
+            return Err(McpdError::InvalidInput {
+                message: format!("project overlay server ID `{name}` is invalid"),
+                hint: "use letters, digits, dots, underscores, or hyphens; start with a letter or digit".into(),
+            });
+        }
+        let table = value.as_table().ok_or_else(|| McpdError::InvalidInput {
+            message: format!("project overlay server `{name}` must be a TOML table"),
+            hint: "define a complete server or use `enabled = false` to disable it".into(),
+        })?;
+        let enabled = table.get("enabled").and_then(toml::Value::as_bool);
+        if enabled == Some(false) {
+            if table.len() != 1 {
+                return Err(McpdError::InvalidInput {
+                    message: format!(
+                        "disabled project overlay server `{name}` also defines server fields"
+                    ),
+                    hint: "use only `enabled = false`, or provide a complete enabled server definition".into(),
+                });
+            }
+            resolved.servers.remove(&name);
+            continue;
+        }
+        let mut server_value = value;
+        let Some(server_table) = server_value.as_table_mut() else {
+            return Err(McpdError::Operational {
+                message: format!("project overlay server `{name}` changed type during validation"),
+                hint: "report this as an mcpd bug".into(),
+            });
+        };
+        server_table.remove("enabled");
+        let server: Server = server_value
+            .try_into()
+            .map_err(|error| McpdError::InvalidInput {
+                message: format!("project overlay server `{name}` is invalid: {error}"),
+                hint: "define a complete stdio or HTTP server in the overlay".into(),
+            })?;
+        resolved.servers.insert(name, server);
+    }
+    for (id, overlay_target) in overlay.targets {
+        let target = resolved.targets.entry(id).or_default();
+        if let Some(enabled) = overlay_target.enabled {
+            target.enabled = enabled;
+        }
+        if let Some(version) = overlay_target.client_version {
+            target.client_version = Some(version);
+        }
+        target.servers.extend(overlay_target.servers);
+    }
+    validate(&resolved, path)?;
+    Ok(resolved)
+}
+
 fn validate(config: &CanonicalConfig, path: &Path) -> Result<()> {
     if config.version != 1 {
         return Err(McpdError::InvalidInput {
@@ -39,8 +134,27 @@ fn validate(config: &CanonicalConfig, path: &Path) -> Result<()> {
                 path.display(),
                 config.version
             ),
-            hint: "mcpd 0.1 supports only `version = 1` and never migrates implicitly".into(),
+            hint: "mcpd 1.x supports only `version = 1` and never migrates implicitly".into(),
         });
+    }
+    for (id, target) in &config.targets {
+        if !is_valid_server_id(id) {
+            return Err(McpdError::InvalidInput {
+                message: format!("target ID `{id}` is invalid"),
+                hint: "use letters, digits, dots, underscores, or hyphens; start with a letter or digit".into(),
+            });
+        }
+        if let Some(version) = &target.client_version
+            && (version.trim().is_empty()
+                || version.len() > 128
+                || version.chars().any(char::is_control))
+        {
+            return Err(McpdError::InvalidInput {
+                message: format!("target `{id}` has an invalid client_version"),
+                hint: "use the printable version reported by the client, for example `1.2.3`"
+                    .into(),
+            });
+        }
     }
     for (name, server) in &config.servers {
         if !is_valid_server_id(name) {

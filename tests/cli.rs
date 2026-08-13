@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -135,6 +135,12 @@ fn snapshot_tree(root: &Path) -> BTreeMap<PathBuf, SnapshotEntry> {
     snapshot
 }
 
+fn project_command(environment: &TestEnvironment, project: &Path) -> Command {
+    let mut command = environment.command();
+    command.env("MCPD_PROJECT_ROOT", project);
+    command
+}
+
 const UNMANAGED_CODEX: &str = r#"# keep this comment
 model = "gpt-example"
 approval_policy = "on-request"
@@ -172,7 +178,284 @@ fn init_creates_only_canonical_config() {
 }
 
 #[test]
-fn targets_completions_get_and_version_cover_the_v01_command_surface() {
+fn target_filters_are_repeatable_and_do_not_touch_unselected_targets() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.add_context7_no_sync();
+    environment.enable_codex();
+    environment
+        .command()
+        .args(["targets", "enable", "cursor"])
+        .assert()
+        .success();
+    let cursor = environment.home.join(".cursor/mcp.json");
+    fs::create_dir_all(cursor.parent().unwrap()).unwrap();
+    fs::write(&cursor, r#"{"mcpServers":{}}"#).unwrap();
+    let cursor_before = fs::read(&cursor).unwrap();
+
+    environment
+        .command()
+        .args(["diff", "--target", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Codex"))
+        .stdout(predicate::str::contains("Cursor").not());
+    environment
+        .command()
+        .args(["sync", "--target", "codex"])
+        .assert()
+        .success();
+    assert!(environment.codex.is_file());
+    assert_eq!(fs::read(&cursor).unwrap(), cursor_before);
+
+    environment
+        .command()
+        .args([
+            "status", "--target", "codex", "--target", "cursor", "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""target": "codex""#))
+        .stdout(predicate::str::contains(r#""target": "cursor""#))
+        .stdout(predicate::str::contains(r#""target": "claude""#).not());
+    environment
+        .command()
+        .args(["doctor", "--target", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Codex"))
+        .stdout(predicate::str::contains("Cursor").not());
+}
+
+#[test]
+fn project_overlays_are_ignored_until_trusted_and_can_be_revoked() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.add_context7_no_sync();
+    let project = environment.root().join("project");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    fs::create_dir_all(project.join(".mcpd")).unwrap();
+    fs::write(
+        project.join(".mcpd/config.toml"),
+        r#"
+version = 1
+
+[servers.context7]
+enabled = false
+
+[servers.project-only]
+transport = "stdio"
+command = "project-tool"
+
+[servers.project-only.env]
+TOKEN = { secret = "project.token" }
+"#,
+    )
+    .unwrap();
+
+    project_command(&environment, &project)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("context7"))
+        .stdout(predicate::str::contains("project-only").not())
+        .stderr(predicate::str::contains(
+            "ignoring untrusted project overlay",
+        ));
+
+    project_command(&environment, &project)
+        .arg("trust")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("trusted project"));
+    project_command(&environment, &project)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("project-only"))
+        .stdout(predicate::str::contains("context7").not());
+    project_command(&environment, &project)
+        .args(["doctor", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("project.token"))
+        .stdout(predicate::str::contains(r#""trusted": true"#));
+
+    project_command(&environment, &project)
+        .args(["trust", "--revoke"])
+        .arg(&project)
+        .assert()
+        .success();
+    project_command(&environment, &project)
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("context7"))
+        .stdout(predicate::str::contains("project-only").not());
+}
+
+#[test]
+fn project_overlay_symlinks_are_rejected_without_following_them() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.add_context7_no_sync();
+    let project = environment.root().join("project-symlink");
+    fs::create_dir_all(project.join(".git")).unwrap();
+    fs::create_dir_all(project.join(".mcpd")).unwrap();
+    let outside = environment.root().join("outside-overlay.toml");
+    fs::write(
+        &outside,
+        "version = 1\n[servers.outside]\ntransport = 'stdio'\ncommand = 'never-follow-this'\n",
+    )
+    .unwrap();
+    project_command(&environment, &project)
+        .arg("trust")
+        .assert()
+        .success();
+    symlink(&outside, project.join(".mcpd/config.toml")).unwrap();
+    let canonical_before = fs::read(&environment.config).unwrap();
+    let outside_before = fs::read(&outside).unwrap();
+
+    project_command(&environment, &project)
+        .arg("list")
+        .assert()
+        .code(5)
+        .stderr(predicate::str::contains("symbolic links are not followed"))
+        .stderr(predicate::str::contains("never-follow-this").not());
+
+    assert_eq!(fs::read(&environment.config).unwrap(), canonical_before);
+    assert_eq!(fs::read(outside).unwrap(), outside_before);
+}
+
+#[test]
+fn claude_project_and_local_scopes_require_trust_and_write_their_native_regions() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.add_context7_no_sync();
+    let project = environment.root().join("scoped-project");
+    fs::create_dir_all(project.join(".git")).unwrap();
+
+    project_command(&environment, &project)
+        .args(["targets", "enable", "claude-project"])
+        .assert()
+        .failure()
+        .code(5);
+    project_command(&environment, &project)
+        .arg("trust")
+        .assert()
+        .success();
+    project_command(&environment, &project)
+        .arg("targets")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Claude Code (project)"))
+        .stdout(predicate::str::contains("Claude Code (local)"));
+    project_command(&environment, &project)
+        .args(["targets", "enable", "claude-project"])
+        .assert()
+        .success();
+    project_command(&environment, &project)
+        .args(["sync", "--target", "claude-project"])
+        .assert()
+        .success();
+    let project_config: serde_json::Value =
+        serde_json::from_slice(&fs::read(project.join(".mcp.json")).unwrap()).unwrap();
+    assert!(project_config["mcpServers"]["context7"].is_object());
+
+    project_command(&environment, &project)
+        .args(["targets", "enable", "claude-local"])
+        .assert()
+        .success();
+    project_command(&environment, &project)
+        .args(["sync", "--target", "claude-local"])
+        .assert()
+        .success();
+    let local: serde_json::Value =
+        serde_json::from_slice(&fs::read(environment.home.join(".claude.json")).unwrap()).unwrap();
+    let project_key = fs::canonicalize(&project)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(local["projects"][project_key]["mcpServers"]["context7"].is_object());
+}
+
+#[test]
+fn a_failed_target_does_not_prevent_later_targets_from_syncing() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.add_context7_no_sync();
+    environment.enable_codex();
+    environment
+        .command()
+        .args(["targets", "enable", "claude"])
+        .assert()
+        .success();
+    fs::create_dir_all(&environment.home).unwrap();
+    fs::write(environment.home.join(".claude.json"), b"{ malformed").unwrap();
+
+    environment
+        .command()
+        .arg("sync")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("Codex"))
+        .stderr(predicate::str::contains("Claude Code"));
+    assert!(
+        fs::read_to_string(&environment.codex)
+            .unwrap()
+            .contains("mcp_servers.context7")
+    );
+    assert_eq!(
+        fs::read(environment.home.join(".claude.json")).unwrap(),
+        b"{ malformed"
+    );
+}
+
+#[test]
+fn an_unavailable_enabled_adapter_does_not_prevent_other_targets_from_syncing() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.add_context7_no_sync();
+    environment.enable_codex();
+    fs::write(
+        &environment.config,
+        format!(
+            "{}\n[targets.aaa-missing]\nenabled = true\n",
+            fs::read_to_string(&environment.config).unwrap()
+        ),
+    )
+    .unwrap();
+
+    environment
+        .command()
+        .arg("sync")
+        .assert()
+        .code(3)
+        .stdout(predicate::str::contains("Codex"))
+        .stderr(predicate::str::contains("aaa-missing"))
+        .stderr(predicate::str::contains("successful targets were kept"));
+
+    assert_eq!(
+        environment.parse_codex()["mcp_servers"]["context7"]["command"].as_str(),
+        Some("npx")
+    );
+    environment
+        .command()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("aaa-missing"))
+        .stdout(predicate::str::contains("invalid"));
+    environment
+        .command()
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("invalid aaa-missing"));
+}
+
+#[test]
+fn targets_completions_get_and_version_cover_the_v1_command_surface() {
     let environment = TestEnvironment::new();
     environment.init();
     environment.add_context7_no_sync();
@@ -201,10 +484,26 @@ fn targets_completions_get_and_version_cover_the_v01_command_surface() {
         .stdout(predicate::str::contains("_mcpd"));
     environment
         .command()
+        .args(["systemd", "generate"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ExecStart=\""))
+        .stdout(predicate::str::contains(" watch"));
+    assert!(!environment.home.join(".config/systemd").exists());
+    environment
+        .command()
         .arg("version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("mcpd 0.1.0"));
+        .stdout(predicate::str::contains("mcpd 1.0.0"));
+    for command in ["status", "diff", "sync", "doctor"] {
+        environment
+            .command()
+            .args([command, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--target <TARGET>"));
+    }
 }
 
 #[test]
@@ -1091,7 +1390,7 @@ fn malformed_target_import_fails_without_modification() {
 }
 
 #[test]
-fn secret_commands_never_print_values_and_track_presence() {
+fn secret_commands_guard_reveal_and_track_presence() {
     let environment = TestEnvironment::new();
     environment.init();
     environment
@@ -1133,6 +1432,27 @@ fn secret_commands_never_print_values_and_track_presence() {
         .assert()
         .success()
         .stdout(predicate::str::contains("present"));
+    environment
+        .command()
+        .args(["secret", "get", "github.token"])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("canary-secret-value").not())
+        .stderr(predicate::str::contains("--reveal"));
+    environment
+        .command()
+        .args(["secret", "get", "github.token", "--reveal"])
+        .assert()
+        .success()
+        .stdout("canary-secret-value\n")
+        .stderr(predicate::str::contains("Warning: revealing"));
+    environment
+        .command()
+        .args(["--json", "secret", "get", "github.token", "--reveal"])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("canary-secret-value").not())
+        .stderr(predicate::str::contains("canary-secret-value").not());
     environment
         .command()
         .args(["secret", "delete", "github.token"])
