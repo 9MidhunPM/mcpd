@@ -178,6 +178,132 @@ fn init_creates_only_canonical_config() {
 }
 
 #[test]
+fn deleted_canonical_config_cannot_be_reinitialized_or_silently_remove_owned_servers() {
+    let environment = TestEnvironment::new();
+    let old_config = r#"version = 1
+
+[servers.bing-search]
+transport = "stdio"
+command = "bing-search-mcp"
+
+[servers.dokploy]
+transport = "http"
+url = "https://dokploy.example/mcp"
+
+[servers.github]
+transport = "stdio"
+command = "github-mcp"
+
+[targets.codex]
+enabled = true
+"#;
+    fs::create_dir_all(environment.config.parent().unwrap()).unwrap();
+    fs::write(&environment.config, old_config).unwrap();
+    environment.write_codex("model = 'gpt-example'\n");
+    environment.command().arg("sync").assert().success();
+
+    let canonical_before = fs::read(&environment.config).unwrap();
+    let state_before = fs::read(environment.state.join("state.toml")).unwrap();
+    let target_before = fs::read(&environment.codex).unwrap();
+    for name in ["bing-search", "dokploy", "github"] {
+        assert!(String::from_utf8_lossy(&state_before).contains(name));
+        assert!(String::from_utf8_lossy(&target_before).contains(name));
+    }
+
+    fs::remove_file(&environment.config).unwrap();
+    environment
+        .command()
+        .arg("init")
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains(
+            "refusing to initialize an empty canonical config",
+        ))
+        .stderr(predicate::str::contains("bing-search"))
+        .stderr(predicate::str::contains("dokploy"))
+        .stderr(predicate::str::contains("github"));
+    assert!(!environment.config.exists());
+    assert_eq!(
+        fs::read(environment.state.join("state.toml")).unwrap(),
+        state_before
+    );
+    assert_eq!(fs::read(&environment.codex).unwrap(), target_before);
+
+    fs::write(&environment.config, &canonical_before).unwrap();
+    environment
+        .command()
+        .arg("diff")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("= synchronized"))
+        .stdout(predicate::str::contains("REMOVE").not())
+        .stderr(predicate::str::contains("WARNING").not());
+    assert_eq!(fs::read(&environment.config).unwrap(), canonical_before);
+    assert_eq!(
+        fs::read(environment.state.join("state.toml")).unwrap(),
+        state_before
+    );
+
+    fs::write(
+        &environment.config,
+        "version = 1\n\n[servers]\n\n[targets]\n\n[targets.codex]\nenabled = true\n",
+    )
+    .unwrap();
+    environment
+        .command()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Canonical  0 server(s)"))
+        .stderr(predicate::str::contains("canonical config has no servers"))
+        .stderr(predicate::str::contains("3 managed target entry/entries"))
+        .stderr(predicate::str::contains("REMOVE Codex: bing-search"));
+    environment
+        .command()
+        .args(["--json", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"canonical_empty\": true"))
+        .stdout(predicate::str::contains("\"managed_entries_at_risk\": 3"))
+        .stdout(predicate::str::contains("\"server\": \"github\""));
+    environment
+        .command()
+        .arg("diff")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Remove\tbing-search"))
+        .stdout(predicate::str::contains("Remove\tdokploy"))
+        .stdout(predicate::str::contains("Remove\tgithub"))
+        .stderr(predicate::str::contains("planned managed removals"));
+
+    let before_dry_run = snapshot_tree(environment.root());
+    environment
+        .command()
+        .args(["sync", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("REMOVE bing-search"))
+        .stdout(predicate::str::contains("REMOVE dokploy"))
+        .stdout(predicate::str::contains("REMOVE github"))
+        .stderr(predicate::str::contains("removals are blocked by default"));
+    assert_eq!(snapshot_tree(environment.root()), before_dry_run);
+
+    environment
+        .command()
+        .arg("sync")
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains(
+            "refusing to remove 3 managed MCP server(s) from Codex",
+        ));
+    assert_eq!(fs::read(&environment.codex).unwrap(), target_before);
+    assert_eq!(
+        fs::read(environment.state.join("state.toml")).unwrap(),
+        state_before
+    );
+}
+
+#[test]
 fn target_filters_are_repeatable_and_do_not_touch_unselected_targets() {
     let environment = TestEnvironment::new();
     environment.init();
@@ -721,7 +847,11 @@ fn managed_server_removal_lifecycle_is_safe_and_dry_run_is_absolutely_pure() {
         "dry-run changed the isolated filesystem tree"
     );
 
-    environment.command().arg("sync").assert().success();
+    environment
+        .command()
+        .args(["sync", "--allow-removals"])
+        .assert()
+        .success();
     let codex = environment.parse_codex();
     let unmanaged_before: toml::Value = toml::from_str(UNMANAGED_CODEX).unwrap();
     assert!(codex["mcp_servers"].get("context7").is_none());

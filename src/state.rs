@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -25,6 +25,15 @@ impl Default for StateFile {
             version: 1,
             targets: BTreeMap::new(),
         }
+    }
+}
+
+impl StateFile {
+    pub fn managed_server_names(&self) -> BTreeSet<String> {
+        self.targets
+            .values()
+            .flat_map(|target| target.managed.keys().cloned())
+            .collect()
     }
 }
 

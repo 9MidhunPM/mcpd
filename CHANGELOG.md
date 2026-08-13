@@ -22,3 +22,6 @@ All notable changes to mcpd are documented here. The project follows semantic ve
 - Dry runs do not write files, locks, state, backups, or keyring values.
 - Unmanaged name collisions, malformed files, duplicate JSONC keys, unsafe symlinks, and ambiguous Antigravity paths fail closed.
 - Multi-target failures are isolated: successful targets remain committed and every failure is reported.
+- Missing canonical configuration can no longer be reinitialized empty while ownership state records managed servers.
+- Schema-update transactions preserve all canonical and owned servers, create private backups, and reject lossy rewrites before mutation.
+- Managed removals are blocked during ordinary sync, require explicit authorization, and are listed prominently by status, diff, and dry-run output.

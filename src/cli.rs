@@ -70,6 +70,9 @@ enum Command {
     Sync {
         #[arg(long)]
         dry_run: bool,
+        /// Permit deletion of previously managed target entries.
+        #[arg(long)]
+        allow_removals: bool,
         #[command(flatten)]
         targets: TargetFilter,
     },
@@ -228,6 +231,23 @@ struct ImportCommand {
 struct StatusOutput {
     canonical_servers: usize,
     targets: Vec<TargetStatus>,
+    removal_safety: Option<RemovalSafetyOutput>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PlannedRemovalOutput {
+    target: String,
+    display_name: String,
+    server: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RemovalSafetyOutput {
+    canonical_empty: bool,
+    missing_managed_servers: Vec<String>,
+    managed_entries_at_risk: usize,
+    planned_removals: Vec<PlannedRemovalOutput>,
+    removals_require_explicit_authorization: bool,
 }
 
 #[derive(Serialize)]
@@ -249,7 +269,7 @@ type AdapterInventory = (Vec<Box<dyn targets::TargetAdapter>>, Vec<(String, Stri
 pub fn run(cli: Cli, paths: Paths) -> Result<()> {
     match &cli.command {
         Command::Init => {
-            config::init(&paths.config)?;
+            config::init(&paths)?;
             message(
                 &cli,
                 format!(
@@ -285,7 +305,12 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 );
             }
             let canonical = crate::resolve::load(&paths)?.config;
-            let reports = sync::sync_enabled_targets(&canonical, &paths, false)?;
+            let reports = sync::sync_enabled_targets_with_policy(
+                &canonical,
+                &paths,
+                false,
+                &sync::RemovalPolicy::AllowServers(BTreeSet::from([name.clone()])),
+            )?;
             render_reports(&cli, &reports, false)
         }
         Command::List => {
@@ -370,29 +395,36 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
         Command::Diff { all, targets } => {
             let canonical = crate::resolve::load(&paths)?.config;
             let plans = sync::plan_selected_targets(&canonical, &paths, &targets.targets)?;
+            let state_file = crate::state::load(&paths.state_dir.join("state.toml"))?;
+            let safety = removal_safety_from_plans(&canonical, &state_file, &plans);
             if cli.json {
-                output::json(
-                    &plans
-                        .iter()
-                        .map(|plan| {
-                            if *all {
-                                serde_json::json!({
-                                    "target": plan.target,
-                                    "changes": plan.changes,
-                                    "inventory": plan.inventory,
-                                })
-                            } else {
-                                serde_json::json!({
-                                    "target": plan.target,
-                                    "changes": plan.changes,
-                                })
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                )
+                let targets = plans
+                    .iter()
+                    .map(|plan| {
+                        if *all {
+                            serde_json::json!({
+                                "target": plan.target,
+                                "changes": plan.changes,
+                                "inventory": plan.inventory,
+                            })
+                        } else {
+                            serde_json::json!({
+                                "target": plan.target,
+                                "changes": plan.changes,
+                            })
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                output::json(&serde_json::json!({
+                    "targets": targets,
+                    "removal_safety": safety,
+                }))
             } else if cli.quiet {
                 Ok(())
             } else {
+                if let Some(safety) = &safety {
+                    render_removal_safety(safety);
+                }
                 if plans.is_empty() {
                     println!("No enabled targets.");
                     return Ok(());
@@ -413,17 +445,35 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 Ok(())
             }
         }
-        Command::Sync { dry_run, targets } => {
+        Command::Sync {
+            dry_run,
+            allow_removals,
+            targets,
+        } => {
             let canonical = crate::resolve::load(&paths)?.config;
-            let batch = sync::sync_selected_targets_isolated(
+            let policy = if *allow_removals {
+                sync::RemovalPolicy::AllowAll
+            } else {
+                sync::RemovalPolicy::Deny
+            };
+            let batch = sync::sync_selected_targets_isolated_with_policy(
                 &canonical,
                 &paths,
                 &targets.targets,
                 *dry_run,
+                &policy,
             )?;
+            let state_file = crate::state::load(&paths.state_dir.join("state.toml"))?;
+            let safety = removal_safety_from_reports(&canonical, &state_file, &batch.reports);
             if cli.json {
-                output::json(&batch)?;
+                output::json(&serde_json::json!({
+                    "sync": &batch,
+                    "removal_safety": &safety,
+                }))?;
             } else if !batch.reports.is_empty() {
+                if let Some(safety) = &safety {
+                    render_removal_safety(safety);
+                }
                 render_reports(&cli, &batch.reports, *dry_run)?;
             } else if batch.failures.is_empty() && !cli.quiet {
                 println!("No enabled targets.");
@@ -561,12 +611,20 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
             let status = StatusOutput {
                 canonical_servers: canonical.servers.len(),
                 targets: target_rows,
+                removal_safety: removal_safety_from_reports(
+                    &canonical,
+                    &state_file,
+                    &batch.reports,
+                ),
             };
             if cli.json {
                 output::json(&status)
             } else if cli.quiet {
                 Ok(())
             } else {
+                if let Some(safety) = &status.removal_safety {
+                    render_removal_safety(safety);
+                }
                 println!("Canonical  {} server(s)", status.canonical_servers);
                 for target in status.targets {
                     let pending = if target.pending == 0 {
@@ -1170,6 +1228,103 @@ fn target_enabled(cli: &Cli, paths: &Paths, target: &str, enabled: bool) -> Resu
     )
 }
 
+fn removal_safety_from_plans(
+    canonical: &crate::model::CanonicalConfig,
+    state: &crate::state::StateFile,
+    plans: &[crate::targets::TargetPlan],
+) -> Option<RemovalSafetyOutput> {
+    let removals = plans
+        .iter()
+        .flat_map(|plan| {
+            plan.changes
+                .iter()
+                .filter(|change| change.kind == crate::targets::ChangeKind::Remove)
+                .map(|change| PlannedRemovalOutput {
+                    target: plan.target.clone(),
+                    display_name: target_display_name(&plan.target).into(),
+                    server: change.server.clone(),
+                })
+        })
+        .collect();
+    build_removal_safety(canonical, state, removals)
+}
+
+fn removal_safety_from_reports(
+    canonical: &crate::model::CanonicalConfig,
+    state: &crate::state::StateFile,
+    reports: &[sync::SyncReport],
+) -> Option<RemovalSafetyOutput> {
+    let removals = reports
+        .iter()
+        .flat_map(|report| {
+            report
+                .changes
+                .iter()
+                .filter(|change| change.kind == crate::targets::ChangeKind::Remove)
+                .map(|change| PlannedRemovalOutput {
+                    target: report.target.clone(),
+                    display_name: target_display_name(&report.target).into(),
+                    server: change.server.clone(),
+                })
+        })
+        .collect();
+    build_removal_safety(canonical, state, removals)
+}
+
+fn build_removal_safety(
+    canonical: &crate::model::CanonicalConfig,
+    state: &crate::state::StateFile,
+    planned_removals: Vec<PlannedRemovalOutput>,
+) -> Option<RemovalSafetyOutput> {
+    let managed = state.managed_server_names();
+    let missing_managed_servers = managed
+        .iter()
+        .filter(|name| !canonical.servers.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing = missing_managed_servers.iter().collect::<BTreeSet<_>>();
+    let managed_entries_at_risk = state
+        .targets
+        .values()
+        .flat_map(|target| target.managed.keys())
+        .filter(|name| missing.contains(name))
+        .count();
+    if missing_managed_servers.is_empty() && planned_removals.is_empty() {
+        return None;
+    }
+    Some(RemovalSafetyOutput {
+        canonical_empty: canonical.servers.is_empty() && !managed.is_empty(),
+        missing_managed_servers,
+        managed_entries_at_risk,
+        removals_require_explicit_authorization: !planned_removals.is_empty(),
+        planned_removals,
+    })
+}
+
+fn render_removal_safety(safety: &RemovalSafetyOutput) {
+    if safety.canonical_empty {
+        eprintln!(
+            "WARNING: canonical config has no servers, but ownership state still tracks {} managed target entry/entries for: {}",
+            safety.managed_entries_at_risk,
+            safety.missing_managed_servers.join(", ")
+        );
+    } else if !safety.missing_managed_servers.is_empty() {
+        eprintln!(
+            "WARNING: canonical config is missing previously managed server(s): {}",
+            safety.missing_managed_servers.join(", ")
+        );
+    }
+    if !safety.planned_removals.is_empty() {
+        eprintln!("WARNING: planned managed removals:");
+        for removal in &safety.planned_removals {
+            eprintln!("  REMOVE {}: {}", removal.display_name, removal.server);
+        }
+        eprintln!(
+            "These removals are blocked by default; use `mcpd sync --allow-removals` only after verifying every entry."
+        );
+    }
+}
+
 fn render_reports(cli: &Cli, reports: &[sync::SyncReport], dry_run: bool) -> Result<()> {
     if cli.json {
         return output::json(&reports);
@@ -1194,6 +1349,11 @@ fn render_reports(cli: &Cli, reports: &[sync::SyncReport], dry_run: bool) -> Res
                 target_display_name(&report.target),
                 report.changes.len()
             );
+            for change in &report.changes {
+                if change.kind == crate::targets::ChangeKind::Remove {
+                    println!("  REMOVE {}", change.server);
+                }
+            }
         }
     }
     Ok(())

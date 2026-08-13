@@ -489,7 +489,7 @@ mod tests {
             codex_config: home.join(".codex/config.toml"),
             home,
         };
-        config::init(&paths.config).unwrap();
+        config::init(&paths).unwrap();
         fs::create_dir_all(paths.codex_config.parent().unwrap()).unwrap();
         let target = b"[mcp_servers.demo]\ncommand = 'demo'\n";
         fs::write(&paths.codex_config, target).unwrap();

@@ -1,6 +1,7 @@
 pub mod fs;
 
 use std::{
+    collections::BTreeSet,
     fs as stdfs,
     io::Write,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -39,6 +40,24 @@ pub struct SyncFailure {
 pub struct SyncBatch {
     pub reports: Vec<SyncReport>,
     pub failures: Vec<SyncFailure>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum RemovalPolicy {
+    #[default]
+    Deny,
+    AllowAll,
+    AllowServers(BTreeSet<String>),
+}
+
+impl RemovalPolicy {
+    fn allows(&self, server: &str) -> bool {
+        match self {
+            Self::Deny => false,
+            Self::AllowAll => true,
+            Self::AllowServers(servers) => servers.contains(server),
+        }
+    }
 }
 
 impl SyncBatch {
@@ -157,7 +176,23 @@ pub fn sync_enabled_targets(
     paths: &Paths,
     dry_run: bool,
 ) -> Result<Vec<SyncReport>> {
-    sync_targets_isolated(config, paths, &enabled_targets(config, paths)?, dry_run).into_result()
+    sync_enabled_targets_with_policy(config, paths, dry_run, &RemovalPolicy::Deny)
+}
+
+pub fn sync_enabled_targets_with_policy(
+    config: &CanonicalConfig,
+    paths: &Paths,
+    dry_run: bool,
+    removal_policy: &RemovalPolicy,
+) -> Result<Vec<SyncReport>> {
+    sync_targets_isolated(
+        config,
+        paths,
+        &enabled_targets(config, paths)?,
+        dry_run,
+        removal_policy,
+    )
+    .into_result()
 }
 
 pub fn sync_selected_targets(
@@ -173,7 +208,7 @@ pub fn sync_selected_targets(
         .into_iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    sync_targets_isolated(config, paths, &selected, dry_run).into_result()
+    sync_targets_isolated(config, paths, &selected, dry_run, &RemovalPolicy::Deny).into_result()
 }
 
 pub fn sync_selected_targets_isolated(
@@ -181,6 +216,22 @@ pub fn sync_selected_targets_isolated(
     paths: &Paths,
     selected: &[String],
     dry_run: bool,
+) -> Result<SyncBatch> {
+    sync_selected_targets_isolated_with_policy(
+        config,
+        paths,
+        selected,
+        dry_run,
+        &RemovalPolicy::Deny,
+    )
+}
+
+pub fn sync_selected_targets_isolated_with_policy(
+    config: &CanonicalConfig,
+    paths: &Paths,
+    selected: &[String],
+    dry_run: bool,
+    removal_policy: &RemovalPolicy,
 ) -> Result<SyncBatch> {
     let targets = if selected.is_empty() {
         enabled_targets(config, paths)?
@@ -190,7 +241,13 @@ pub fn sync_selected_targets_isolated(
             .map(str::to_owned)
             .collect()
     };
-    Ok(sync_targets_isolated(config, paths, &targets, dry_run))
+    Ok(sync_targets_isolated(
+        config,
+        paths,
+        &targets,
+        dry_run,
+        removal_policy,
+    ))
 }
 
 fn sync_targets_isolated(
@@ -198,10 +255,11 @@ fn sync_targets_isolated(
     paths: &Paths,
     targets: &[String],
     dry_run: bool,
+    removal_policy: &RemovalPolicy,
 ) -> SyncBatch {
     let mut batch = SyncBatch::default();
     for target in targets {
-        match sync_target(target, config, paths, dry_run) {
+        match sync_target(target, config, paths, dry_run, removal_policy) {
             Ok(report) => batch.reports.push(report),
             Err(error) => {
                 let exit_code = crate::diagnostics::ExitCode::from(&error) as i32;
@@ -239,6 +297,7 @@ fn sync_target(
     config: &CanonicalConfig,
     paths: &Paths,
     dry_run: bool,
+    removal_policy: &RemovalPolicy,
 ) -> Result<SyncReport> {
     if dry_run {
         let plan = plan_target(target, config, paths)?;
@@ -249,6 +308,7 @@ fn sync_target(
         let mut state_file = state::load(&state_path)?;
         let adapter = targets::adapter(target, paths)?;
         let mut plan = adapter.plan(config, state_file.targets.get(adapter.id()))?;
+        validate_removal_policy(&plan, removal_policy)?;
         if plan.is_noop() {
             return Ok(report(&plan, false));
         }
@@ -280,6 +340,28 @@ fn sync_target(
         state::save(&state_path, &state_file)?;
         remove_pending(paths)?;
         Ok(report(&plan, false))
+    })
+}
+
+fn validate_removal_policy(plan: &TargetPlan, policy: &RemovalPolicy) -> Result<()> {
+    let blocked = plan
+        .changes
+        .iter()
+        .filter(|change| change.kind == crate::targets::ChangeKind::Remove)
+        .filter(|change| !policy.allows(&change.server))
+        .map(|change| change.server.clone())
+        .collect::<Vec<_>>();
+    if blocked.is_empty() {
+        return Ok(());
+    }
+    Err(McpdError::Conflict {
+        message: format!(
+            "refusing to remove {} managed MCP server(s) from {}: {}",
+            blocked.len(),
+            targets::display_name(&plan.target),
+            blocked.join(", ")
+        ),
+        hint: "restore missing canonical definitions, inspect `mcpd diff --all`, or rerun `mcpd sync --allow-removals` only when every removal is intentional".into(),
     })
 }
 

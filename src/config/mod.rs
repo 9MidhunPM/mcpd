@@ -1,12 +1,18 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
 
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value, value};
 
 use crate::{
+    Paths,
     diagnostics::{McpdError, Result},
     model::{CanonicalConfig, ConfigValue, Server, TargetServerConfig},
+    state,
     sync::fs::atomic_write,
 };
 
@@ -251,7 +257,8 @@ pub fn parse_server_id(value: &str) -> std::result::Result<String, String> {
     }
 }
 
-pub fn init(path: &Path) -> Result<()> {
+pub fn init(paths: &Paths) -> Result<()> {
+    let path = &paths.config;
     if path.exists() {
         return Err(McpdError::Conflict {
             message: format!(
@@ -262,7 +269,104 @@ pub fn init(path: &Path) -> Result<()> {
                 .into(),
         });
     }
+    let ownership = state::load(&paths.state_dir.join("state.toml"))?;
+    let managed = ownership.managed_server_names();
+    if !managed.is_empty() {
+        return Err(McpdError::Conflict {
+            message: format!(
+                "refusing to initialize an empty canonical config: ownership state still tracks {} managed server(s): {}",
+                managed.len(),
+                managed.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            hint: "restore the canonical config from a known-good copy or recover definitions from a target; do not discard ownership state until every managed entry has been reviewed".into(),
+        });
+    }
     atomic_write(path, EMPTY_CONFIG.as_bytes(), Some(0o600))
+}
+
+/// Commit a prepared schema rewrite without permitting server loss.
+///
+/// Future schema migrations must use this transaction instead of replacing the
+/// canonical file directly. The old bytes are backed up before the atomic
+/// replacement, and both the old server table and ownership state constrain the
+/// rendered result.
+pub fn apply_schema_update(paths: &Paths, before: &[u8], rendered: &[u8]) -> Result<PathBuf> {
+    let current = fs::read(&paths.config).map_err(|source| McpdError::io(&paths.config, source))?;
+    if current != before {
+        return Err(McpdError::Conflict {
+            message: format!(
+                "{} changed after the schema update was planned",
+                paths.config.display()
+            ),
+            hint: "reload the canonical config and re-plan the migration; no file was modified"
+                .into(),
+        });
+    }
+    let old_servers = raw_server_names(before, &paths.config)?;
+    let rendered_text = std::str::from_utf8(rendered).map_err(|_| McpdError::InvalidInput {
+        message: "schema update rendered a non-UTF-8 canonical config".into(),
+        hint: "fix the migration; no file was modified".into(),
+    })?;
+    let updated = parse(rendered_text, &paths.config)?;
+    let updated_servers = updated.servers.keys().cloned().collect::<BTreeSet<_>>();
+    let ownership = state::load(&paths.state_dir.join("state.toml"))?;
+    let managed_servers = ownership.managed_server_names();
+    let required = old_servers
+        .union(&managed_servers)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let missing = required
+        .difference(&updated_servers)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(McpdError::Conflict {
+            message: format!(
+                "schema update would discard canonical or managed server(s): {}",
+                missing.join(", ")
+            ),
+            hint: "fix the migration to preserve every server definition; removals must be a separate explicit user operation".into(),
+        });
+    }
+
+    let backup_dir = paths.state_dir.join("backups/canonical");
+    crate::sync::ensure_private_dir(&backup_dir)?;
+    let backup = backup_dir.join(format!(
+        "schema-{}.toml",
+        crate::sync::fs::hash_bytes(before)
+    ));
+    if backup.exists() {
+        let existing = fs::read(&backup).map_err(|source| McpdError::io(&backup, source))?;
+        if existing != before {
+            return Err(McpdError::Conflict {
+                message: format!("canonical migration backup {} conflicts", backup.display()),
+                hint: "inspect the backup directory; no canonical file was modified".into(),
+            });
+        }
+    } else {
+        atomic_write(&backup, before, Some(0o600))?;
+    }
+    atomic_write(&paths.config, rendered, None)?;
+    Ok(backup)
+}
+
+fn raw_server_names(bytes: &[u8], path: &Path) -> Result<BTreeSet<String>> {
+    let text = std::str::from_utf8(bytes).map_err(|_| McpdError::InvalidInput {
+        message: format!("{} is not valid UTF-8", path.display()),
+        hint: "repair the old canonical config before migrating it".into(),
+    })?;
+    let value: toml::Value = toml::from_str(text).map_err(|error| McpdError::InvalidInput {
+        message: format!(
+            "{} cannot be inspected for migration: {error}",
+            path.display()
+        ),
+        hint: "repair the old canonical config before migrating it".into(),
+    })?;
+    Ok(value
+        .get("servers")
+        .and_then(toml::Value::as_table)
+        .map(|servers| servers.keys().cloned().collect())
+        .unwrap_or_default())
 }
 
 pub fn add_server(path: &Path, name: &str, server: &Server) -> Result<()> {
@@ -458,7 +562,48 @@ fn insert_value_table(table: &mut Table, key: &str, values: &BTreeMap<String, Co
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use tempfile::TempDir;
+
     use super::*;
+
+    fn test_paths(temp: &TempDir) -> Paths {
+        let home = temp.path().join("home");
+        Paths {
+            config: temp.path().join("config/mcpd/config.toml"),
+            state_dir: temp.path().join("state/mcpd"),
+            codex_config: home.join(".codex/config.toml"),
+            home,
+        }
+    }
+
+    fn ownership(paths: &Paths, names: &[&str]) -> state::StateFile {
+        let managed = names
+            .iter()
+            .map(|name| {
+                (
+                    (*name).to_owned(),
+                    state::ManagedServer {
+                        canonical_hash: format!("canonical-{name}"),
+                        rendered_hash: format!("rendered-{name}"),
+                    },
+                )
+            })
+            .collect();
+        state::StateFile {
+            version: 1,
+            targets: BTreeMap::from([(
+                "codex".into(),
+                state::TargetState {
+                    config_path: paths.codex_config.clone(),
+                    adapter_version: 1,
+                    last_success_unix_ms: 1,
+                    managed,
+                },
+            )]),
+        }
+    }
 
     #[test]
     fn rejects_unknown_version() {
@@ -541,5 +686,129 @@ mod tests {
                 "expected {literal} to remain literal"
             );
         }
+    }
+
+    #[test]
+    fn init_refuses_to_replace_missing_canonical_state_with_an_empty_config() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(&temp);
+        let old_state = ownership(&paths, &["bing-search", "dokploy", "github"]);
+        state::save(&paths.state_dir.join("state.toml"), &old_state).unwrap();
+        let state_before = fs::read(paths.state_dir.join("state.toml")).unwrap();
+
+        let error = init(&paths).unwrap_err();
+
+        assert!(error.to_string().contains("refusing to initialize"));
+        for name in ["bing-search", "dokploy", "github"] {
+            assert!(error.to_string().contains(name));
+        }
+        assert!(!paths.config.exists());
+        assert_eq!(
+            fs::read(paths.state_dir.join("state.toml")).unwrap(),
+            state_before
+        );
+    }
+
+    #[test]
+    fn schema_update_backs_up_and_preserves_servers_and_ownership() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(&temp);
+        let before = br#"version = 1
+
+[servers.bing-search]
+transport = "stdio"
+command = "bing"
+
+[servers.dokploy]
+transport = "http"
+url = "https://dokploy.example/mcp"
+
+[servers.github]
+transport = "stdio"
+command = "github"
+
+[targets.codex]
+enabled = true
+"#;
+        let rendered = br#"version = 1
+
+[servers.bing-search]
+transport = "stdio"
+command = "bing"
+
+[servers.dokploy]
+transport = "http"
+url = "https://dokploy.example/mcp"
+
+[servers.github]
+transport = "stdio"
+command = "github"
+
+[targets.codex]
+enabled = true
+client_version = "1.0"
+"#;
+        atomic_write(&paths.config, before, Some(0o640)).unwrap();
+        let old_state = ownership(&paths, &["bing-search", "dokploy", "github"]);
+        state::save(&paths.state_dir.join("state.toml"), &old_state).unwrap();
+        let state_before = fs::read(paths.state_dir.join("state.toml")).unwrap();
+
+        let backup = apply_schema_update(&paths, before, rendered).unwrap();
+
+        assert_eq!(fs::read(&paths.config).unwrap(), rendered);
+        assert_eq!(fs::read(&backup).unwrap(), before);
+        assert_eq!(
+            fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&paths.config).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(
+            fs::read(paths.state_dir.join("state.toml")).unwrap(),
+            state_before
+        );
+        let updated = load(&paths.config).unwrap();
+        assert_eq!(
+            updated.servers.keys().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "bing-search".to_owned(),
+                "dokploy".to_owned(),
+                "github".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn schema_update_rejects_any_canonical_or_owned_server_loss() {
+        let temp = TempDir::new().unwrap();
+        let paths = test_paths(&temp);
+        let before = br#"version = 1
+[servers.github]
+transport = "stdio"
+command = "github"
+[targets.codex]
+enabled = true
+"#;
+        let unsafe_rendered = b"version = 1\n[servers]\n[targets.codex]\nenabled = true\n";
+        atomic_write(&paths.config, before, Some(0o600)).unwrap();
+        state::save(
+            &paths.state_dir.join("state.toml"),
+            &ownership(&paths, &["github"]),
+        )
+        .unwrap();
+        let state_before = fs::read(paths.state_dir.join("state.toml")).unwrap();
+
+        let error = apply_schema_update(&paths, before, unsafe_rendered).unwrap_err();
+
+        assert!(error.to_string().contains("would discard"));
+        assert!(error.to_string().contains("github"));
+        assert_eq!(fs::read(&paths.config).unwrap(), before);
+        assert_eq!(
+            fs::read(paths.state_dir.join("state.toml")).unwrap(),
+            state_before
+        );
+        assert!(!paths.state_dir.join("backups/canonical").exists());
     }
 }

@@ -17,6 +17,21 @@ fn sync_one(
         .expect("test configuration enables Codex"))
 }
 
+fn sync_one_allowing_removals(
+    config: &mcpd::model::CanonicalConfig,
+    paths: &Paths,
+) -> mcpd::diagnostics::Result<sync::SyncReport> {
+    Ok(sync::sync_enabled_targets_with_policy(
+        config,
+        paths,
+        false,
+        &sync::RemovalPolicy::AllowAll,
+    )?
+    .into_iter()
+    .next()
+    .expect("test configuration enables Codex"))
+}
+
 fn plan_one(
     config: &mcpd::model::CanonicalConfig,
     paths: &Paths,
@@ -155,7 +170,14 @@ fn removing_canonical_server_removes_only_owned_entry() {
     let config = canonical(&paths.config, "demo");
     sync_one(&config, &paths, false).unwrap();
     let empty = config::parse("version=1\n[targets.codex]\nenabled=true\n", &paths.config).unwrap();
-    let report = sync_one(&empty, &paths, false).unwrap();
+    let error = sync_one(&empty, &paths, false).unwrap_err();
+    assert!(error.to_string().contains("refusing to remove"));
+    assert!(
+        fs::read_to_string(&paths.codex_config)
+            .unwrap()
+            .contains("mcp_servers.demo")
+    );
+    let report = sync_one_allowing_removals(&empty, &paths).unwrap();
     assert_eq!(report.changes[0].kind, ChangeKind::Remove);
     assert!(
         !fs::read_to_string(&paths.codex_config)

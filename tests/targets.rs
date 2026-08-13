@@ -22,7 +22,7 @@ fn paths(temp: &TempDir) -> Paths {
 fn every_json_adapter_syncs_stdio_and_http_preserves_unmanaged_and_is_idempotent() {
     let temp = TempDir::new().unwrap();
     let paths = paths(&temp);
-    config::init(&paths.config).unwrap();
+    config::init(&paths).unwrap();
     config::add_server(
         &paths.config,
         "local",
@@ -93,7 +93,7 @@ fn every_json_adapter_imports_native_stdio_and_remote_without_modifying_source()
     for target in ["claude", "cursor", "antigravity", "openchamber"] {
         let temp = TempDir::new().unwrap();
         let paths = paths(&temp);
-        config::init(&paths.config).unwrap();
+        config::init(&paths).unwrap();
         let path = paths.target_config(target).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let native = match target { "openchamber" => r#"{"other":true,"mcp":{"servers":{"local":{"type":"local","command":["node","server.js"],"environment":{"LOG_LEVEL":"info"}},"remote":{"type":"remote","url":"https://example.com/mcp","oauth":false,"headers":{"Authorization":"{env:REMOTE_TOKEN}"}}}}}"#.to_owned(), "antigravity" => r#"{"other":true,"mcpServers":{"local":{"command":"node","args":["server.js"],"env":{"LOG_LEVEL":"info"}},"remote":{"serverUrl":"https://example.com/mcp","headers":{"X-Client":"mcpd"}}}}"#.to_owned(), "cursor" => r#"{"other":true,"mcpServers":{"local":{"command":"node","args":["server.js"],"env":{"LOG_LEVEL":"info"}},"remote":{"url":"https://example.com/mcp","headers":{"Authorization":"${env:REMOTE_TOKEN}"}}}}"#.to_owned(), _ => r#"{"other":true,"mcpServers":{"local":{"type":"stdio","command":"node","args":["server.js"],"env":{"LOG_LEVEL":"info"}},"remote":{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"${REMOTE_TOKEN}"}}}}"#.to_owned() };
@@ -128,7 +128,7 @@ fn every_json_adapter_imports_native_stdio_and_remote_without_modifying_source()
 fn all_target_dry_run_has_no_writes_and_malformed_json_fails_safely() {
     let temp = TempDir::new().unwrap();
     let paths = paths(&temp);
-    config::init(&paths.config).unwrap();
+    config::init(&paths).unwrap();
     config::add_server(
         &paths.config,
         "local",
@@ -161,7 +161,7 @@ fn all_target_dry_run_has_no_writes_and_malformed_json_fails_safely() {
 fn adapter_import_never_discards_native_oauth_or_disabled_semantics() {
     let temp = TempDir::new().unwrap();
     let paths = paths(&temp);
-    config::init(&paths.config).unwrap();
+    config::init(&paths).unwrap();
     let path = paths.target_config("openchamber").unwrap();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, r#"{"mcp":{"servers":{"oauth":{"type":"remote","url":"https://example.com/mcp","oauth":{"client_id":"native"}},"disabled":{"type":"local","command":["disabled"],"disabled":true},"safe":{"type":"local","command":["safe"]}}}}"#).unwrap();
@@ -196,7 +196,7 @@ fn adapter_import_never_discards_native_oauth_or_disabled_semantics() {
 fn jsonc_comments_trailing_commas_and_unmanaged_servers_survive_sync() {
     let temp = TempDir::new().unwrap();
     let paths = paths(&temp);
-    config::init(&paths.config).unwrap();
+    config::init(&paths).unwrap();
     config::add_server(
         &paths.config,
         "managed",
@@ -239,7 +239,7 @@ fn jsonc_comments_trailing_commas_and_unmanaged_servers_survive_sync() {
 fn declarative_jsonc_adapter_is_discovered_merge_safe_and_idempotent() {
     let temp = TempDir::new().unwrap();
     let paths = paths(&temp);
-    config::init(&paths.config).unwrap();
+    config::init(&paths).unwrap();
     let manifests = paths.config.parent().unwrap().join("targets");
     fs::create_dir_all(&manifests).unwrap();
     fs::write(

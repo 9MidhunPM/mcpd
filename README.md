@@ -82,11 +82,15 @@ enabled = true
 
 `mcpd` refuses to overwrite a same-name unmanaged target entry until that entry is explicitly imported or removed. Once an entry is owned, canonical state is authoritative and `mcpd diff` reports external drift before `mcpd sync` repairs it.
 
+Canonical loss is treated as a recovery event, not as an empty desired state. If the canonical file is missing while ownership state still records managed servers, `mcpd init` refuses to create an empty replacement and names the servers that must be recovered. Schema rewrites must preserve every canonical and owned server, create a private canonical backup, and atomically replace the file; unsupported schema versions are never reinterpreted implicitly.
+
 Detection and enablement are separate. `mcpd targets` can report an installed client, but `diff`, `sync`, and automatic reconciliation after `add` or `remove` operate only on targets explicitly enabled with `mcpd targets enable <target>`. With no enabled targets they report `No enabled targets.` and do not inspect or mutate client configuration.
 
 For stdio servers, the server ID is one positional value and `--` is required before the command. IDs must match `[a-zA-Z0-9][a-zA-Z0-9._-]*`. `--no-sync` updates only canonical configuration and reports that synchronization was skipped.
 
 Normal `mcpd diff` shows only actionable managed synchronization changes. Use `mcpd diff --all` (or `--include-unmanaged`) for a read-only inventory separated into synchronized managed servers, managed drift, target-only unmanaged servers, and canonical-only servers. Unmanaged entries are informational and are never scheduled for deletion.
+
+Managed target removal is explicit. `status`, `diff`, and `sync --dry-run` emit a prominent warning and list every `REMOVE` when canonical definitions are missing but ownership remains. Ordinary `mcpd sync` blocks those removals. `mcpd remove SERVER` authorizes only that named removal; after an intentional `mcpd remove SERVER --no-sync` or direct canonical edit, review `mcpd diff --all` and use `mcpd sync --allow-removals` to confirm the pending deletions. This flag never authorizes changes to unmanaged entries.
 
 Adopt an existing Codex entry explicitly with `mcpd import codex SERVER`, or inspect a bulk adoption with `mcpd import codex --all --dry-run` before running `mcpd import codex --all`. Import reads and snapshots the target but never writes it. Single-server imports are strict: a collision or native definition that cannot round-trip losslessly fails without writes. Bulk imports are best-effort by default: safely representable entries are imported and every collision or unsupported entry is listed under `Skipped`; use `mcpd import codex --all --strict` for all-or-nothing planning. Imported entries are added to canonical configuration in one batch and become mcpd-owned only after the canonical write succeeds.
 
