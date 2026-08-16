@@ -132,7 +132,7 @@ impl TargetAdapter for CodexAdapter {
                     });
                 }
                 let (server, migrations) = import_server(&name, &item, secret_mappings)?;
-                let expected = render_server(&name, &server)?;
+                let expected = render_server(&name, &server, &BTreeSet::new())?;
                 let rendered_hash = hash_item(&expected)?;
                 let current_hash = hash_item(&item)?;
                 if migrations.is_empty() && rendered_hash != current_hash {
@@ -258,7 +258,14 @@ impl TargetAdapter for CodexAdapter {
         let mut managed = BTreeMap::new();
 
         for (name, server) in &desired_servers {
-            let expected = render_server(name, server)?;
+            let preserved_env_vars = current
+                .get(name)
+                .filter(|_| owned.contains_key(name))
+                .map(|item| wrapper_env_vars(name, item))
+                .transpose()?
+                .flatten()
+                .unwrap_or_default();
+            let expected = render_server(name, server, &preserved_env_vars)?;
             let rendered_hash = hash_item(&expected)?;
             let canonical_hash = hash_serializable(server)?;
             match current.get(name) {
@@ -353,6 +360,62 @@ impl TargetAdapter for CodexAdapter {
             },
             state_changed,
         })
+    }
+
+    fn doctor_diagnostic(
+        &self,
+        desired: &CanonicalConfig,
+        state: Option<&TargetState>,
+    ) -> Result<Option<String>> {
+        if runtime_keyring_env_vars().is_empty() {
+            return Ok(None);
+        }
+        let Some(state) = state.filter(|state| {
+            state.config_path == self.path && state.adapter_version == ADAPTER_VERSION
+        }) else {
+            return Ok(None);
+        };
+        let Some((_, document)) = self.read_document(true)? else {
+            return Ok(None);
+        };
+        let current = current_servers(&document)?;
+        let mut missing = Vec::new();
+        for (name, server) in desired_for_codex(desired)? {
+            if !server_uses_runtime_wrapper(&server) || !state.managed.contains_key(&name) {
+                continue;
+            }
+            let Some(forwarded) = current
+                .get(&name)
+                .map(|item| wrapper_env_vars(&name, item))
+                .transpose()?
+                .flatten()
+            else {
+                continue;
+            };
+            if runtime_keyring_env_vars()
+                .iter()
+                .any(|variable| !forwarded.contains(*variable))
+            {
+                missing.push(name);
+            }
+        }
+        if missing.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(format!(
+                "managed Codex wrapper(s) {} lack required Linux keyring environment forwarding {}; run `mcpd sync --target codex`",
+                missing
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                runtime_keyring_env_vars()
+                    .iter()
+                    .map(|variable| format!("`{variable}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )))
+        }
     }
 }
 
@@ -659,7 +722,11 @@ fn desired_for_codex(config: &CanonicalConfig) -> Result<BTreeMap<String, Server
     Ok(result)
 }
 
-fn render_server(name: &str, server: &Server) -> Result<Item> {
+fn render_server(
+    name: &str,
+    server: &Server,
+    preserved_env_vars: &BTreeSet<String>,
+) -> Result<Item> {
     let mut table = Table::new();
     match server {
         Server::Stdio {
@@ -667,14 +734,34 @@ fn render_server(name: &str, server: &Server) -> Result<Item> {
             args,
             env,
             cwd,
-            secrets,
+            secrets: _,
         } => {
-            if env.values().any(|value| value.secret_name().is_some()) || !secrets.is_empty() {
+            if server_uses_runtime_wrapper(server) {
                 table.insert("command", value("mcpd"));
                 let mut wrapper_args = Array::new();
                 wrapper_args.push("exec");
                 wrapper_args.push(name);
                 table.insert("args", Item::Value(Value::Array(wrapper_args)));
+                let mut forwarded_env = preserved_env_vars.clone();
+                for value in env.values() {
+                    if let ConfigValue::Literal(value) = value {
+                        if let Some(source) = env_reference(value)? {
+                            forwarded_env.insert(source.into());
+                        }
+                    }
+                }
+                forwarded_env.extend(
+                    runtime_keyring_env_vars()
+                        .iter()
+                        .map(|value| (*value).into()),
+                );
+                if !forwarded_env.is_empty() {
+                    let mut array = Array::new();
+                    for variable in forwarded_env {
+                        array.push(variable);
+                    }
+                    table.insert("env_vars", Item::Value(Value::Array(array)));
+                }
                 return Ok(Item::Table(table));
             }
             table.insert("command", value(command.clone()));
@@ -780,6 +867,47 @@ fn render_server(name: &str, server: &Server) -> Result<Item> {
         }
     }
     Ok(Item::Table(table))
+}
+
+fn server_uses_runtime_wrapper(server: &Server) -> bool {
+    matches!(server, Server::Stdio { env, secrets, .. }
+        if env.values().any(|value| value.secret_name().is_some()) || !secrets.is_empty())
+}
+
+fn runtime_keyring_env_vars() -> &'static [&'static str] {
+    #[cfg(target_os = "linux")]
+    {
+        &["DBUS_SESSION_BUS_ADDRESS"]
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        &[]
+    }
+}
+
+fn wrapper_env_vars(name: &str, item: &Item) -> Result<Option<BTreeSet<String>>> {
+    let value = item_value(item)?;
+    let Some(table) = value.as_table() else {
+        return Ok(None);
+    };
+    if table.get("command").and_then(toml::Value::as_str) != Some("mcpd")
+        || optional_string_array(name, table, "args")? != ["exec", name]
+    {
+        return Ok(None);
+    }
+    let mut forwarded = BTreeSet::new();
+    for variable in optional_string_array(name, table, "env_vars")? {
+        if variable.is_empty() || variable.chars().any(char::is_whitespace) {
+            return Err(McpdError::InvalidInput {
+                message: format!(
+                    "managed Codex wrapper `{name}` has invalid forwarded environment variable `{variable}`"
+                ),
+                hint: "use a non-empty environment variable name without whitespace".into(),
+            });
+        }
+        forwarded.insert(variable);
+    }
+    Ok(Some(forwarded))
 }
 
 fn env_reference(value: &str) -> Result<Option<&str>> {

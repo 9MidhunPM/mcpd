@@ -153,6 +153,13 @@ pub trait TargetAdapter {
         mode: ImportMode,
     ) -> Result<TargetImport>;
     fn plan(&self, desired: &CanonicalConfig, state: Option<&TargetState>) -> Result<TargetPlan>;
+    fn doctor_diagnostic(
+        &self,
+        _desired: &CanonicalConfig,
+        _state: Option<&TargetState>,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 pub const PRIMARY_TARGET_IDS: &[&str] =

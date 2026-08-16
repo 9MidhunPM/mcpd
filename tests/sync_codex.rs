@@ -232,8 +232,73 @@ enabled=true
     let target = fs::read_to_string(&paths.codex_config).unwrap();
     assert!(target.contains("command = \"mcpd\""));
     assert!(target.contains("args = [\"exec\", \"secure\"]"));
+    #[cfg(target_os = "linux")]
+    assert!(target.contains("env_vars = [\"DBUS_SESSION_BUS_ADDRESS\"]"));
     assert!(!target.contains("service.token"));
     assert!(!target.contains("TOKEN"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn secret_wrapper_merges_forwarded_environment_and_stays_idempotent() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(&temp);
+    let config = config::parse(
+        r#"
+version=1
+[servers.secure]
+transport="stdio"
+command="tool"
+[servers.secure.env]
+TOKEN={secret="service.token"}
+PUBLIC_HOST="${env:PUBLIC_HOST}"
+[targets.codex]
+enabled=true
+"#,
+        &paths.config,
+    )
+    .unwrap();
+    sync_one(&config, &paths, false).unwrap();
+    fs::write(
+        &paths.codex_config,
+        r#"[mcp_servers.secure]
+command="mcpd"
+args=["exec", "secure"]
+env_vars=["EXISTING", "DBUS_SESSION_BUS_ADDRESS", "EXISTING"]
+"#,
+    )
+    .unwrap();
+
+    let repaired = sync_one(&config, &paths, false).unwrap();
+    assert_eq!(repaired.changes[0].kind, ChangeKind::DriftRepair);
+    let target = fs::read_to_string(&paths.codex_config).unwrap();
+    assert!(
+        target.contains("env_vars = [\"DBUS_SESSION_BUS_ADDRESS\", \"EXISTING\", \"PUBLIC_HOST\"]")
+    );
+    assert!(!target.contains("service.token"));
+    assert!(!target.contains("TOKEN"));
+    let state_after_repair = fs::read(paths.state_dir.join("state.toml")).unwrap();
+
+    let second = sync_one(&config, &paths, false).unwrap();
+    assert!(second.changes.is_empty());
+    assert_eq!(target, fs::read_to_string(&paths.codex_config).unwrap());
+    assert_eq!(
+        state_after_repair,
+        fs::read(paths.state_dir.join("state.toml")).unwrap()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn non_secret_stdio_does_not_forward_keyring_runtime_environment() {
+    let temp = TempDir::new().unwrap();
+    let paths = paths(&temp);
+    sync_one(&canonical(&paths.config, "tool"), &paths, false).unwrap();
+    assert!(
+        !fs::read_to_string(&paths.codex_config)
+            .unwrap()
+            .contains("DBUS_SESSION_BUS_ADDRESS")
+    );
 }
 
 #[test]
