@@ -65,6 +65,7 @@ pub struct TargetImport {
     pub servers: BTreeMap<String, ImportedServer>,
     pub skipped: Vec<ImportSkipped>,
     pub secret_writes: Vec<crate::secrets::SecretWrite>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +85,7 @@ pub struct TargetPlan {
     pub inventory: TargetInventory,
     pub next_state: TargetState,
     pub state_changed: bool,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +129,9 @@ pub trait TargetAdapter {
     fn adapter_version(&self) -> u32;
     fn detect(&self) -> bool;
     fn config_path(&self) -> &Path;
+    fn warnings(&self) -> Vec<String> {
+        Vec::new()
+    }
     fn secret_capabilities(&self) -> SecretCapabilities;
     fn native_schema(&self) -> &'static str;
     fn compatibility(&self, client_version: Option<&str>) -> Compatibility {
@@ -162,8 +167,7 @@ pub trait TargetAdapter {
     }
 }
 
-pub const PRIMARY_TARGET_IDS: &[&str] =
-    &["claude", "cursor", "codex", "antigravity", "openchamber"];
+pub const PRIMARY_TARGET_IDS: &[&str] = &["claude", "cursor", "codex", "antigravity", "opencode"];
 pub const TARGET_IDS: &[&str] = &[
     "claude",
     "claude-project",
@@ -171,7 +175,7 @@ pub const TARGET_IDS: &[&str] = &[
     "cursor",
     "codex",
     "antigravity",
-    "openchamber",
+    "opencode",
 ];
 
 pub fn adapter(id: &str, paths: &Paths) -> Result<Box<dyn TargetAdapter>> {
@@ -180,9 +184,8 @@ pub fn adapter(id: &str, paths: &Paths) -> Result<Box<dyn TargetAdapter>> {
             paths.codex_config.clone(),
             paths.home.clone(),
         ))),
-        "claude" | "claude-project" | "claude-local" | "cursor" | "antigravity" | "openchamber" => {
-            Ok(Box::new(json::JsonAdapter::new(id, paths)?))
-        }
+        "claude" | "claude-project" | "claude-local" | "cursor" | "antigravity" | "opencode"
+        | "openchamber" => Ok(Box::new(json::JsonAdapter::new(id, paths)?)),
         _ => declarative::discover(paths)?
             .into_iter()
             .find(|adapter| adapter.id() == id)
@@ -228,7 +231,7 @@ pub fn display_name(id: &str) -> &str {
         "cursor" => "Cursor",
         "codex" => "Codex",
         "antigravity" => "Antigravity",
-        "openchamber" => "OpenChamber",
+        "opencode" | "openchamber" => "OpenCode",
         other => other,
     }
 }

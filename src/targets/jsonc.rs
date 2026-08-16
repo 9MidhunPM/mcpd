@@ -100,11 +100,26 @@ pub fn patch_servers(
                 additions.push((name.as_str(), value));
             }
         }
-        if !additions.is_empty() {
+        let removes_all_existing = !properties.is_empty()
+            && properties
+                .iter()
+                .all(|property| removed.iter().any(|name| name == &property.key));
+        if removes_all_existing && !additions.is_empty() {
+            let replacement = serde_json::to_string(&Value::Object(final_servers.clone()))
+                .map_err(|error| internal_jsonc_error(error.to_string()))?;
+            edits.push(Edit {
+                start: object_range.0,
+                end: object_range.1,
+                replacement,
+            });
+        } else if !additions.is_empty() {
             insert_properties(source, &sanitized, object_range, &additions, &mut edits)?;
         }
 
-        for name in removed {
+        for name in removed
+            .iter()
+            .filter(|_| !removes_all_existing || additions.is_empty())
+        {
             if let Some(index) = by_name.get(name.as_str()) {
                 let property = &properties[*index];
                 edits.push(Edit {

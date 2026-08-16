@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io::{self, IsTerminal, Write},
     path::PathBuf,
 };
 
@@ -78,6 +79,8 @@ enum Command {
     },
     /// Import existing target MCP definitions into canonical configuration.
     Import(ImportCommand),
+    /// Adopt an equivalent existing target MCP into mcpd ownership.
+    Adopt(AdoptCommand),
     /// Store and inspect secret names using the operating-system keyring.
     Secret {
         #[command(subcommand)]
@@ -206,12 +209,8 @@ enum SecretCommand {
 }
 
 #[derive(Debug, Args)]
-#[command(group(
-    ArgGroup::new("selection")
-        .required(true)
-        .args(["server", "all"])
-))]
-#[command(override_usage = "mcpd import <TARGET> (<SERVER>|--all) [OPTIONS]")]
+#[command(group(ArgGroup::new("selection").args(["server", "all"])))]
+#[command(override_usage = "mcpd import (<TARGET> (<SERVER>|--all)|all) [OPTIONS]")]
 struct ImportCommand {
     target: String,
     #[arg(value_parser = config::parse_server_id)]
@@ -223,8 +222,35 @@ struct ImportCommand {
     /// Abort an --all import if any selected server cannot be imported safely.
     #[arg(long)]
     strict: bool,
+    /// Limit `mcpd import all` to one or more detected targets.
+    #[arg(long = "target")]
+    targets: Vec<String>,
+    /// Accept the deterministic first discovered definition for conflicts during `import all`.
+    #[arg(long)]
+    yes: bool,
+    /// Import canonical configuration but defer adoption and synchronization during `import all`.
+    #[arg(long)]
+    no_sync: bool,
     #[arg(long = "secret", value_name = "FIELD=KEYRING_NAME", value_parser = parse_secret_mapping)]
     secrets: Vec<(String, String)>,
+}
+
+#[derive(Debug, Args)]
+#[command(group(ArgGroup::new("adopt_selection").required(true).args(["server", "all"])))]
+#[command(override_usage = "mcpd adopt <TARGET> (<SERVER>|--all) [OPTIONS]")]
+struct AdoptCommand {
+    target: String,
+    #[arg(value_parser = config::parse_server_id)]
+    server: Option<String>,
+    /// Adopt every canonical server atomically; if any cannot be adopted, no ownership changes are made.
+    #[arg(long)]
+    all: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    replace: bool,
+    #[arg(long, requires = "replace")]
+    yes: bool,
 }
 
 #[derive(Serialize)]
@@ -261,6 +287,9 @@ struct TargetStatus {
     unmanaged: usize,
     pending: usize,
     diagnostic: Option<String>,
+    warnings: Vec<String>,
+    #[serde(skip)]
+    unmanaged_servers: Vec<String>,
     compatibility: targets::Compatibility,
 }
 
@@ -362,32 +391,36 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
             Some(TargetCommand::Disable { target }) => target_enabled(&cli, &paths, target, false),
             None => {
                 let canonical = config::load(&paths.config)?;
-                let rows = targets::adapters(&paths)?.into_iter().map(|adapter| serde_json::json!({"id":adapter.id(), "detected":adapter.detect(), "enabled":canonical.targets.get(adapter.id()).is_some_and(|v| v.enabled)})).collect::<Vec<_>>();
+                let rows = targets::adapters(&paths)?.into_iter().map(|adapter| serde_json::json!({"id":adapter.id(), "detected":adapter.detect(), "enabled":canonical.targets.get(adapter.id()).is_some_and(|v| v.enabled), "config": adapter.config_path(), "warnings": adapter.warnings()})).collect::<Vec<_>>();
                 if cli.json {
                     output::json(&rows)
                 } else if cli.quiet {
                     Ok(())
                 } else {
+                    let mut table_rows = Vec::new();
                     for adapter in targets::adapters(&paths)? {
-                        println!(
-                            "{}\t{}\t{}",
+                        table_rows.push(vec![
+                            adapter.display_name().into(),
                             if adapter.detect() {
-                                "installed"
+                                "✓ detected"
                             } else {
-                                "not detected"
-                            },
-                            adapter.display_name(),
+                                "! unavailable"
+                            }
+                            .into(),
                             if canonical
                                 .targets
                                 .get(adapter.id())
                                 .is_some_and(|v| v.enabled)
                             {
-                                "enabled"
+                                "enabled".into()
                             } else {
-                                "disabled"
-                            }
-                        );
+                                "disabled".into()
+                            },
+                        ]);
+                        render_adapter_warnings(&adapter.warnings());
                     }
+                    println!("Targets");
+                    output::table(&["Target", "Availability", "Configuration"], &table_rows);
                     Ok(())
                 }
             }
@@ -406,11 +439,13 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                                 "target": plan.target,
                                 "changes": plan.changes,
                                 "inventory": plan.inventory,
+                                "warnings": plan.warnings,
                             })
                         } else {
                             serde_json::json!({
                                 "target": plan.target,
                                 "changes": plan.changes,
+                                "warnings": plan.warnings,
                             })
                         }
                     })
@@ -429,18 +464,13 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     println!("No enabled targets.");
                     return Ok(());
                 }
+                if *all {
+                    render_diff_matrix(&canonical, &plans);
+                } else {
+                    render_change_table(&plans, "Changes");
+                }
                 for plan in plans {
-                    println!("{}", target_display_name(&plan.target));
-                    if *all {
-                        render_inventory(&plan);
-                    } else {
-                        if plan.changes.is_empty() {
-                            println!("  = synchronized");
-                        }
-                        for change in plan.changes {
-                            println!("  {:?}\t{}", change.kind, change.server);
-                        }
-                    }
+                    render_adapter_warnings(&plan.warnings);
                 }
                 Ok(())
             }
@@ -481,6 +511,39 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
             batch.into_result().map(|_| ())
         }
         Command::Import(command) => {
+            if command.target == "all" {
+                if command.server.is_some()
+                    || command.all
+                    || command.strict
+                    || !command.secrets.is_empty()
+                {
+                    return Err(McpdError::InvalidInput {
+                        message: "`mcpd import all` does not accept a server selection, --strict, or --secret".into(),
+                        hint: "use `mcpd import <target> <server>` for advanced per-target imports".into(),
+                    });
+                }
+                let report = crate::onboard::import_all(
+                    &paths,
+                    &command.targets,
+                    command.dry_run,
+                    command.yes,
+                    command.no_sync,
+                )?;
+                return render_onboard_report(&cli, &report);
+            }
+            if command.server.is_none() && !command.all {
+                return Err(McpdError::InvalidInput {
+                    message: "target imports require <SERVER> or --all".into(),
+                    hint: "use `mcpd import all` for first-time onboarding".into(),
+                });
+            }
+            if !command.targets.is_empty() || command.yes || command.no_sync {
+                return Err(McpdError::InvalidInput {
+                    message: "--target, --yes, and --no-sync are only valid with `mcpd import all`"
+                        .into(),
+                    hint: "use `mcpd import all --help` for onboarding options".into(),
+                });
+            }
             let selection = command.server.iter().cloned().collect::<BTreeSet<_>>();
             let selection = (!command.all).then_some(&selection);
             let mappings = command.secrets.iter().cloned().collect();
@@ -493,6 +556,83 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 mappings,
             )?;
             render_import_report(&cli, &report)
+        }
+        Command::Adopt(command) => {
+            if command.replace && !command.yes && !command.dry_run {
+                if io::stdin().is_terminal() {
+                    eprint!("Replace conflicting target definitions with canonical state? [y/N] ");
+                    io::stderr()
+                        .flush()
+                        .map_err(|source| McpdError::io("<terminal>", source))?;
+                    let mut answer = String::new();
+                    io::stdin()
+                        .read_line(&mut answer)
+                        .map_err(|source| McpdError::io("<terminal>", source))?;
+                    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                        // Explicit interactive confirmation.
+                    } else {
+                        return Err(McpdError::Conflict {
+                            message: "replacement was not confirmed".into(),
+                            hint: "rerun with `--replace --yes` when intentional".into(),
+                        });
+                    }
+                } else {
+                    return Err(McpdError::InvalidInput {
+                        message: "--replace requires --yes in non-interactive use".into(),
+                        hint: "review the semantic diff, then rerun with `--replace --yes`".into(),
+                    });
+                }
+            }
+            let selection = command.server.iter().cloned().collect::<BTreeSet<_>>();
+            let report = crate::adopt::adopt(
+                &command.target,
+                (!command.all).then_some(&selection),
+                &paths,
+                command.dry_run,
+                command.replace,
+            )?;
+            if cli.json {
+                return output::json(&report);
+            }
+            if !cli.quiet {
+                println!(
+                    "{} adoption — {}",
+                    if report.dry_run {
+                        "Dry-run"
+                    } else {
+                        "Completed"
+                    },
+                    target_display_name(&report.target)
+                );
+                let rows = report
+                    .adopted
+                    .iter()
+                    .map(|entry| {
+                        vec![
+                            if entry.replaced { "replace" } else { "adopt" }.into(),
+                            entry.name.clone(),
+                            if entry.replaced {
+                                "canonical definition will be used"
+                            } else {
+                                "equivalent definition"
+                            }
+                            .into(),
+                        ]
+                    })
+                    .chain(report.skipped.iter().map(|entry| {
+                        vec!["! skipped".into(), entry.name.clone(), entry.reason.clone()]
+                    }))
+                    .collect::<Vec<_>>();
+                if rows.is_empty() {
+                    println!("✓ Nothing needed adoption.");
+                } else {
+                    output::table(&["Action", "Server", "Result"], &rows);
+                }
+                if report.dry_run {
+                    println!("No files or ownership state were modified.");
+                }
+            }
+            Ok(())
         }
         Command::Secret { command } => run_secret_command(&cli, command, &paths),
         Command::Exec { server } => crate::execution::execute(server, &paths),
@@ -507,12 +647,23 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 .targets
                 .iter()
                 .filter(|id| {
+                    let id = if id.as_str() == "openchamber" {
+                        "opencode"
+                    } else {
+                        id
+                    };
                     canonical
                         .targets
-                        .get(*id)
+                        .get(id)
                         .is_some_and(|target| target.enabled)
                 })
-                .cloned()
+                .map(|id| {
+                    if id == "openchamber" {
+                        "opencode".into()
+                    } else {
+                        id.clone()
+                    }
+                })
                 .collect::<Vec<_>>();
             let batch = if targets.targets.is_empty() {
                 sync::sync_selected_targets_isolated(&canonical, &paths, &[], true)?
@@ -547,6 +698,8 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     unmanaged: 0,
                     pending: 0,
                     diagnostic: Some(diagnostic),
+                    warnings: Vec::new(),
+                    unmanaged_servers: Vec::new(),
                 })
                 .collect::<Vec<_>>();
             for adapter in adapters {
@@ -579,6 +732,11 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     .err()
                     .map(ToString::to_string)
                     .or_else(|| sync_failure.map(|failure| failure.error.clone()));
+                let unmanaged_servers = names
+                    .iter()
+                    .filter(|name| !managed_names.contains(name))
+                    .map(|name| (*name).clone())
+                    .collect::<Vec<_>>();
                 target_rows.push(TargetStatus {
                     target: adapter.id().into(),
                     display_name: adapter.display_name().into(),
@@ -594,12 +752,11 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                         "drifted"
                     },
                     managed: managed_names.len(),
-                    unmanaged: names
-                        .iter()
-                        .filter(|name| !managed_names.contains(name))
-                        .count(),
+                    unmanaged: unmanaged_servers.len(),
                     pending,
                     diagnostic,
+                    warnings: adapter.warnings(),
+                    unmanaged_servers,
                     compatibility: adapter.compatibility(
                         canonical
                             .targets
@@ -625,25 +782,7 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 if let Some(safety) = &status.removal_safety {
                     render_removal_safety(safety);
                 }
-                println!("Canonical  {} server(s)", status.canonical_servers);
-                for target in status.targets {
-                    let pending = if target.pending == 0 {
-                        String::new()
-                    } else {
-                        format!(" / {} pending", target.pending)
-                    };
-                    println!(
-                        "{:<9} {:<9} {} managed / {} unmanaged{}",
-                        target.display_name,
-                        target.status,
-                        target.managed,
-                        target.unmanaged,
-                        pending
-                    );
-                    if let Some(diagnostic) = target.diagnostic {
-                        println!("  {diagnostic}");
-                    }
-                }
+                render_status(&status);
                 Ok(())
             }
         }
@@ -794,6 +933,7 @@ fn run_doctor(cli: &Cli, paths: &Paths, selected: &[String], network: bool) -> R
                 "valid": false,
                 "servers": 0,
                 "diagnostic": diagnostic,
+                "warnings": [],
                 "compatibility": {
                     "adapter_version": 0,
                     "native_schema": "unavailable",
@@ -807,6 +947,7 @@ fn run_doctor(cli: &Cli, paths: &Paths, selected: &[String], network: bool) -> R
         .into_iter()
         .map(|adapter| {
             let result = adapter.server_names();
+            let warnings = adapter.warnings();
             let runtime_diagnostic = result.as_ref().ok().and_then(|_| {
                 match adapter.doctor_diagnostic(&canonical, state_file.targets.get(adapter.id())) {
                     Ok(diagnostic) => diagnostic,
@@ -821,6 +962,7 @@ fn run_doctor(cli: &Cli, paths: &Paths, selected: &[String], network: bool) -> R
                 "valid": result.is_ok() && runtime_diagnostic.is_none(),
                 "servers": result.as_ref().map_or(0, Vec::len),
                 "diagnostic": result.err().map(|error| error.to_string()).or(runtime_diagnostic),
+                "warnings": warnings,
                 "compatibility": adapter.compatibility(
                     canonical.targets.get(adapter.id()).and_then(|target| target.client_version.as_deref())
                 ),
@@ -907,33 +1049,44 @@ fn run_doctor(cli: &Cli, paths: &Paths, selected: &[String], network: bool) -> R
                 }
             );
         }
-        if checks.is_empty() {
-            println!("No canonical secret references.");
+        println!("Secrets");
+        let secret_rows = checks
+            .iter()
+            .map(|(name, present)| {
+                vec![
+                    name.clone(),
+                    if *present { "✓ present" } else { "! missing" }.into(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        if secret_rows.is_empty() {
+            println!("✓ No canonical secret references.");
+        } else {
+            output::table(&["Secret reference", "Status"], &secret_rows);
         }
-        for (name, present) in checks {
-            println!(
-                "{} secret `{name}`",
-                if present { "present" } else { "missing" }
-            );
-        }
-        println!("Commands");
-        if command_checks.is_empty() {
-            println!("ok no stdio commands configured");
-        }
-        for command in command_checks {
-            println!(
-                "{} {} ({})",
-                if command["available"].as_bool() == Some(true) {
-                    "ok"
-                } else {
-                    "missing"
-                },
-                command["server"].as_str().unwrap_or("unknown"),
-                command["command"].as_str().unwrap_or("unknown")
-            );
+        println!("\nCommands");
+        let command_rows = command_checks
+            .iter()
+            .map(|command| {
+                vec![
+                    command["server"].as_str().unwrap_or("unknown").into(),
+                    command["command"].as_str().unwrap_or("unknown").into(),
+                    if command["available"].as_bool() == Some(true) {
+                        "✓ available"
+                    } else {
+                        "! missing"
+                    }
+                    .into(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        if command_rows.is_empty() {
+            println!("✓ No stdio commands configured.");
+        } else {
+            output::table(&["Server", "Command", "Status"], &command_rows);
         }
         if network {
-            println!("Network");
+            println!("\nNetwork");
             if network_checks.is_empty() {
                 println!("ok no HTTP servers configured");
             }
@@ -970,19 +1123,42 @@ fn run_doctor(cli: &Cli, paths: &Paths, selected: &[String], network: bool) -> R
             }
         );
         println!("{sync_lock} sync lock");
-        println!("Targets");
+        println!("\nTargets");
+        let target_rows = target_checks
+            .iter()
+            .map(|target| {
+                vec![
+                    target["display_name"].as_str().unwrap_or("unknown").into(),
+                    if target["valid"].as_bool() == Some(true) {
+                        "✓ valid"
+                    } else {
+                        "! invalid"
+                    }
+                    .into(),
+                    target["servers"].as_u64().unwrap_or(0).to_string(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        output::table(&["Target", "Status", "Servers"], &target_rows);
         for target in target_checks {
-            println!(
-                "{} {}",
-                if target["valid"].as_bool() == Some(true) {
-                    "ok"
-                } else {
-                    "invalid"
-                },
-                target["display_name"].as_str().unwrap_or("unknown")
-            );
             if let Some(diagnostic) = target["diagnostic"].as_str() {
-                println!("  {diagnostic}");
+                println!(
+                    "! {}: {diagnostic}",
+                    target["display_name"].as_str().unwrap_or("unknown")
+                );
+            }
+            if target["target"].as_str() == Some("opencode") {
+                if let Some(config) = target["config"].as_str() {
+                    println!("  active OpenCode config: {config}");
+                }
+            }
+            if let Some(warnings) = target["warnings"].as_array() {
+                render_adapter_warnings(
+                    &warnings
+                        .iter()
+                        .filter_map(|warning| warning.as_str().map(str::to_owned))
+                        .collect::<Vec<_>>(),
+                );
             }
         }
         Ok(())
@@ -1038,7 +1214,12 @@ fn selected_adapters(
     let mut unique = BTreeSet::new();
     let mut adapters = Vec::new();
     for id in selected {
-        if unique.insert(id.as_str()) {
+        let id = if id == "openchamber" {
+            "opencode"
+        } else {
+            id.as_str()
+        };
+        if unique.insert(id) {
             adapters.push(targets::adapter(id, paths)?);
         }
     }
@@ -1120,8 +1301,9 @@ fn render_import_report(cli: &Cli, report: &import::ImportReport) -> Result<()> 
     if cli.quiet {
         return Ok(());
     }
+    render_adapter_warnings(&report.warnings);
     println!(
-        "{} import from {}",
+        "{} import — {}",
         if report.dry_run {
             "Dry-run"
         } else {
@@ -1129,17 +1311,27 @@ fn render_import_report(cli: &Cli, report: &import::ImportReport) -> Result<()> 
         },
         target_display_name(&report.target)
     );
-    if !report.imported.is_empty() {
-        println!("\nImported");
-        for entry in &report.imported {
-            println!("  + {}\t{}", entry.name, entry.transport);
-        }
-    }
-    if !report.skipped.is_empty() {
-        println!("\nSkipped");
-        for entry in &report.skipped {
-            println!("  ! {}\t{}", entry.name, entry.reason);
-        }
+    let rows = report
+        .imported
+        .iter()
+        .map(|entry| {
+            vec![
+                "+ import".into(),
+                entry.name.clone(),
+                entry.transport.to_owned(),
+            ]
+        })
+        .chain(
+            report
+                .skipped
+                .iter()
+                .map(|entry| vec!["! skipped".into(), entry.name.clone(), entry.reason.clone()]),
+        )
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        println!("✓ Nothing available to import.");
+    } else {
+        output::table(&["Action", "Server", "Details"], &rows);
     }
     if !report.migrated_secrets.is_empty() {
         println!("\nSecrets");
@@ -1154,6 +1346,78 @@ fn render_import_report(cli: &Cli, report: &import::ImportReport) -> Result<()> 
         println!("No files or ownership state were modified.");
     } else {
         println!("Target configuration was not modified.");
+    }
+    Ok(())
+}
+
+fn render_onboard_report(cli: &Cli, report: &crate::onboard::OnboardReport) -> Result<()> {
+    if cli.json {
+        return output::json(report);
+    }
+    if cli.quiet {
+        return Ok(());
+    }
+    println!(
+        "{} onboarding review",
+        if report.dry_run { "Dry-run" } else { "mcpd" }
+    );
+    let rows = report
+        .entries
+        .iter()
+        .map(|entry| {
+            vec![
+                entry.name.clone(),
+                entry.found_in.join(", "),
+                entry.transport.into(),
+                entry.status.clone(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        println!("No readable MCP configurations were found.");
+    } else {
+        output::table(&["Server", "Found in", "Type", "Status"], &rows);
+    }
+    for entry in &report.unsupported {
+        println!("! Unsupported: {entry}");
+    }
+    if !report.skipped_conflicts.is_empty() {
+        println!(
+            "! Conflicts skipped: {}. Rerun interactively to choose a source, or use --yes to accept the first discovered definition.",
+            report.skipped_conflicts.join(", ")
+        );
+    }
+    if report.dry_run {
+        println!(
+            "Would import {} canonical server(s) and enable {} target(s).",
+            report.imported.len(),
+            report.enabled_targets.len()
+        );
+        println!("No files, keyring entries, or ownership state were modified.");
+    } else {
+        println!(
+            "✓ Canonical: {} server(s); enabled: {}.",
+            report.canonical_servers,
+            if report.enabled_targets.is_empty() {
+                "none".into()
+            } else {
+                report.enabled_targets.join(", ")
+            }
+        );
+        if let Some(sync) = &report.sync {
+            let pending = sync
+                .reports
+                .iter()
+                .map(|item| item.changes.len())
+                .sum::<usize>();
+            println!(
+                "✓ Verification: {} sync action(s), {} isolated failure(s).",
+                pending,
+                sync.failures.len()
+            );
+        } else {
+            println!("Synchronization deferred (--no-sync).");
+        }
     }
     Ok(())
 }
@@ -1343,69 +1607,244 @@ fn render_reports(cli: &Cli, reports: &[sync::SyncReport], dry_run: bool) -> Res
         println!("No enabled targets.");
         return Ok(());
     }
-    for report in reports {
-        if report.changes.is_empty() {
-            println!(
-                "= {} already synchronized",
-                target_display_name(&report.target)
-            );
-        } else {
-            println!(
-                "{} {}: {} change(s)",
-                if dry_run { "dry-run" } else { "synchronized" },
-                target_display_name(&report.target),
-                report.changes.len()
-            );
-            for change in &report.changes {
-                if change.kind == crate::targets::ChangeKind::Remove {
-                    println!("  REMOVE {}", change.server);
-                }
+    let rows = reports
+        .iter()
+        .flat_map(|report| {
+            if report.changes.is_empty() {
+                vec![vec![
+                    target_display_name(&report.target).into(),
+                    "✓ synced".into(),
+                    "—".into(),
+                ]]
+            } else {
+                report
+                    .changes
+                    .iter()
+                    .map(|change| {
+                        vec![
+                            target_display_name(&report.target).into(),
+                            change_action(&change.kind).into(),
+                            change.server.clone(),
+                        ]
+                    })
+                    .collect()
             }
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        if dry_run {
+            "Planned changes"
+        } else {
+            "Synchronization"
         }
+    );
+    output::table(&["Target", "Action", "Server"], &rows);
+    let changes = reports
+        .iter()
+        .map(|report| report.changes.len())
+        .sum::<usize>();
+    if dry_run {
+        println!(
+            "Planned {changes} action(s) across {} target(s).",
+            reports.len()
+        );
+        println!("No files were modified.");
+    } else {
+        println!(
+            "✓ Applied {changes} action(s) across {} target(s).",
+            reports.len()
+        );
+    }
+    for report in reports {
+        render_adapter_warnings(&report.warnings);
     }
     Ok(())
+}
+
+fn render_adapter_warnings(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("Warning: {warning}");
+    }
 }
 
 fn target_display_name(target: &str) -> &str {
     targets::display_name(target)
 }
 
-fn render_inventory(plan: &crate::targets::TargetPlan) {
-    println!("\nManaged (synchronized)");
-    render_names('=', &plan.inventory.managed_synchronized);
-
-    println!("\nManaged drift");
-    if plan.inventory.managed_drift.is_empty() {
-        println!("  (none)");
+fn render_status(status: &StatusOutput) {
+    let invalid = status
+        .targets
+        .iter()
+        .filter(|target| target.status == "invalid")
+        .count();
+    let drifted = status
+        .targets
+        .iter()
+        .filter(|target| target.status == "drifted")
+        .count();
+    let enabled = status
+        .targets
+        .iter()
+        .filter(|target| target.enabled)
+        .count();
+    let health = if invalid > 0 {
+        "! needs attention"
+    } else if drifted > 0 {
+        "~ changes pending"
     } else {
-        for change in &plan.inventory.managed_drift {
-            let symbol = match change.kind {
-                crate::targets::ChangeKind::Add => '+',
-                crate::targets::ChangeKind::Update | crate::targets::ChangeKind::DriftRepair => '~',
-                crate::targets::ChangeKind::Remove => '-',
-            };
-            println!("  {symbol} {}", change.server);
-        }
-    }
-
+        "✓ healthy"
+    };
     println!(
-        "\nOnly in {} (unmanaged)",
-        target_display_name(&plan.target)
+        "Overall: {health} — {} canonical server(s), {enabled} enabled target(s)",
+        status.canonical_servers
     );
-    render_names('+', &plan.inventory.only_in_target);
-
-    println!("\nOnly in mcpd");
-    render_names('-', &plan.inventory.only_in_mcpd);
+    let rows = status
+        .targets
+        .iter()
+        .map(|target| {
+            vec![
+                target.display_name.clone(),
+                status_label(target).into(),
+                target.managed.to_string(),
+                target.unmanaged.to_string(),
+                target.pending.to_string(),
+            ]
+        })
+        .collect::<Vec<_>>();
+    output::table(
+        &["Target", "Status", "Managed", "Unmanaged", "Pending"],
+        &rows,
+    );
+    let unmanaged = status
+        .targets
+        .iter()
+        .flat_map(|target| {
+            target
+                .unmanaged_servers
+                .iter()
+                .map(|server| vec![target.display_name.clone(), format!("+ {server}")])
+        })
+        .collect::<Vec<_>>();
+    if !unmanaged.is_empty() {
+        println!("\nUnmanaged servers");
+        output::table(&["Target", "Server"], &unmanaged);
+    }
+    for target in &status.targets {
+        if let Some(diagnostic) = &target.diagnostic {
+            println!("! {}: {diagnostic}", target.display_name);
+        }
+        render_adapter_warnings(&target.warnings);
+    }
 }
 
-fn render_names(symbol: char, names: &[String]) {
-    if names.is_empty() {
-        println!("  (none)");
-    } else {
-        for name in names {
-            println!("  {symbol} {name}");
-        }
+fn status_label(target: &TargetStatus) -> &'static str {
+    match target.status {
+        "synced" => "✓ synced",
+        "drifted" => "~ drifted",
+        "disabled" => "- disabled",
+        _ => "! invalid",
     }
+}
+
+fn change_action(kind: &crate::targets::ChangeKind) -> &'static str {
+    match kind {
+        crate::targets::ChangeKind::Add => "+ add",
+        crate::targets::ChangeKind::Update => "~ update",
+        crate::targets::ChangeKind::Remove => "- remove",
+        crate::targets::ChangeKind::DriftRepair => "~ repair",
+    }
+}
+
+fn render_change_table(plans: &[crate::targets::TargetPlan], title: &str) {
+    println!("{title}");
+    let rows = plans
+        .iter()
+        .flat_map(|plan| {
+            if plan.changes.is_empty() {
+                vec![vec![
+                    target_display_name(&plan.target).into(),
+                    "✓ synced".into(),
+                    "—".into(),
+                ]]
+            } else {
+                plan.changes
+                    .iter()
+                    .map(|change| {
+                        vec![
+                            target_display_name(&plan.target).into(),
+                            change_action(&change.kind).into(),
+                            change.server.clone(),
+                        ]
+                    })
+                    .collect()
+            }
+        })
+        .collect::<Vec<_>>();
+    output::table(&["Target", "Action", "Server"], &rows);
+}
+
+fn render_diff_matrix(
+    canonical: &crate::model::CanonicalConfig,
+    plans: &[crate::targets::TargetPlan],
+) {
+    let mut servers = canonical.servers.keys().cloned().collect::<BTreeSet<_>>();
+    for plan in plans {
+        servers.extend(plan.inventory.managed_synchronized.iter().cloned());
+        servers.extend(
+            plan.inventory
+                .managed_drift
+                .iter()
+                .map(|change| change.server.clone()),
+        );
+        servers.extend(plan.inventory.only_in_target.iter().cloned());
+        servers.extend(plan.inventory.only_in_mcpd.iter().cloned());
+    }
+    let mut headers = vec!["Server".to_owned()];
+    headers.extend(
+        plans
+            .iter()
+            .map(|plan| target_display_name(&plan.target).to_owned()),
+    );
+    let rows = servers
+        .into_iter()
+        .map(|server| {
+            let mut row = vec![server.clone()];
+            for plan in plans {
+                let disabled = canonical
+                    .targets
+                    .get(&plan.target)
+                    .and_then(|target| target.servers.get(&server))
+                    .is_some_and(|setting| !setting.enabled);
+                let cell = if disabled {
+                    "disabled"
+                } else if plan.inventory.managed_synchronized.contains(&server) {
+                    "✓ synced"
+                } else if plan
+                    .inventory
+                    .managed_drift
+                    .iter()
+                    .any(|change| change.server == server)
+                {
+                    "~ drifted"
+                } else if plan.inventory.only_in_target.contains(&server) {
+                    "+ unmanaged"
+                } else if plan.inventory.only_in_mcpd.contains(&server) {
+                    "- missing"
+                } else {
+                    "—"
+                };
+                row.push(cell.into());
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    println!("Server matrix");
+    let header_refs = headers.iter().map(String::as_str).collect::<Vec<_>>();
+    output::table(&header_refs, &rows);
+    println!(
+        "Legend: ✓ synced  ~ drifted  + unmanaged  - missing  disabled not selected for this target"
+    );
 }
 
 fn message(cli: &Cli, text: String) -> Result<()> {

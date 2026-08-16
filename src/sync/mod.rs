@@ -26,6 +26,7 @@ pub struct SyncReport {
     pub path: PathBuf,
     pub dry_run: bool,
     pub changes: Vec<crate::targets::Change>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +134,11 @@ fn selected_targets<'a>(
 ) -> Result<Vec<&'a str>> {
     let mut result = Vec::new();
     for target in selected {
+        let target = if target == "openchamber" {
+            "opencode"
+        } else {
+            target
+        };
         if !config
             .targets
             .get(target)
@@ -143,8 +149,8 @@ fn selected_targets<'a>(
                 hint: format!("run `mcpd targets enable {target}` first"),
             });
         }
-        if !result.contains(&target.as_str()) {
-            result.push(target.as_str());
+        if !result.contains(&target) {
+            result.push(target);
         }
     }
     Ok(result)
@@ -423,6 +429,7 @@ fn report(plan: &TargetPlan, dry_run: bool) -> SyncReport {
         path: plan.path.clone(),
         dry_run,
         changes: plan.changes.clone(),
+        warnings: plan.warnings.clone(),
     }
 }
 
@@ -471,6 +478,39 @@ fn verify_snapshot(plan: &TargetPlan) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// Commit an adoption plan while the caller holds the sync lock. Ownership is
+/// persisted only after an optional target rewrite succeeds.
+pub(crate) fn commit_adoption(
+    paths: &Paths,
+    state_file: &mut state::StateFile,
+    mut plan: TargetPlan,
+) -> Result<()> {
+    verify_snapshot(&plan)?;
+    plan.next_state.last_success_unix_ms = now_ms()?;
+    if !plan.changes.is_empty() {
+        backup(&plan, &paths.state_dir)?;
+        let pending = PendingTransaction {
+            version: 1,
+            target: plan.target.clone(),
+            target_path: plan.path.clone(),
+            pre_hash: plan.before.as_deref().map(fs::hash_bytes),
+            desired_hash: fs::hash_bytes(&plan.rendered),
+            next_state: plan.next_state.clone(),
+        };
+        save_pending(paths, &pending)?;
+        fs::atomic_write(&plan.path, &plan.rendered, None)?;
+        state_file
+            .targets
+            .insert(plan.target.clone(), plan.next_state);
+        state::save(&paths.state_dir.join("state.toml"), state_file)?;
+        return remove_pending(paths);
+    }
+    state_file
+        .targets
+        .insert(plan.target.clone(), plan.next_state);
+    state::save(&paths.state_dir.join("state.toml"), state_file)
 }
 
 pub(crate) fn ensure_private_dir(path: &Path) -> Result<()> {

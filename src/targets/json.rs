@@ -19,7 +19,10 @@ use crate::{
     },
 };
 
-const VERSION: u32 = 1;
+// Version 2 switches OpenCode from the never-released `mcp.servers` proposal
+// to the released OpenCode schema, where server names are direct children of
+// `mcp`.
+const VERSION: u32 = 2;
 
 struct Profile {
     id: &'static str,
@@ -36,10 +39,12 @@ pub struct JsonAdapter {
     profile: Profile,
     path: PathBuf,
     home: PathBuf,
+    warnings: Vec<String>,
 }
 
 impl JsonAdapter {
     pub fn new(id: &str, paths: &Paths) -> Result<Self> {
+        let id = if id == "openchamber" { "opencode" } else { id };
         let profile = match id {
             "claude" => Profile {
                 id: "claude",
@@ -71,10 +76,10 @@ impl JsonAdapter {
                 env_reference: None,
                 explicit_type: false,
             },
-            "openchamber" => Profile {
-                id: "openchamber",
-                command: "openchamber",
-                servers_path: vec!["mcp".into(), "servers".into()],
+            "opencode" => Profile {
+                id: "opencode",
+                command: "opencode",
+                servers_path: vec!["mcp".into()],
                 open_code: true,
                 remote_url: "url",
                 env: "environment",
@@ -128,12 +133,13 @@ impl JsonAdapter {
                 });
             }
         };
-        let path = match id {
+        let (path, warnings) = match id {
             "claude-project" => crate::resolve::current_project(paths)?
-                .map(|project| project.root.join(".mcp.json")),
-            "claude-local" => paths.target_config("claude"),
-            "antigravity" => Some(antigravity_path(paths)?),
-            _ => paths.target_config(id),
+                .map(|project| (project.root.join(".mcp.json"), Vec::new())),
+            "claude-local" => paths.target_config("claude").map(|path| (path, Vec::new())),
+            "antigravity" => Some((antigravity_path(paths)?, Vec::new())),
+            "opencode" => Some(open_code_path(paths)?),
+            _ => paths.target_config(id).map(|path| (path, Vec::new())),
         }
         .ok_or_else(|| McpdError::TargetUnavailable {
             target: id.into(),
@@ -162,6 +168,7 @@ impl JsonAdapter {
             profile,
             path,
             home: allowed_root,
+            warnings,
         })
     }
 
@@ -237,6 +244,51 @@ impl JsonAdapter {
         Ok(current)
     }
 
+    /// mcpd 1.0.0 wrote the unshipped `mcp.servers` proposal. OpenCode 1.x
+    /// treats that as a server named `servers`, so only migrate it when the
+    /// previous ownership record proves every nested entry belongs to mcpd.
+    fn take_legacy_open_code_servers(
+        &self,
+        doc: &mut Value,
+        previous: Option<&TargetState>,
+    ) -> Result<BTreeSet<String>> {
+        if !self.profile.open_code {
+            return Ok(BTreeSet::new());
+        }
+        let Some(mcp) = doc.get("mcp").and_then(Value::as_object) else {
+            return Ok(BTreeSet::new());
+        };
+        let Some(legacy) = mcp.get("servers") else {
+            return Ok(BTreeSet::new());
+        };
+        // A real current-schema server may legitimately be named `servers`.
+        if legacy.get("type").is_some() {
+            return Ok(BTreeSet::new());
+        }
+        let legacy = legacy
+            .as_object()
+            .ok_or_else(|| self.bad("legacy `mcp.servers` collection must be an object"))?;
+        let previous =
+            previous.filter(|state| state.config_path == self.path && state.adapter_version == 1);
+        let Some(previous) = previous else {
+            return Err(self.bad(
+                "found legacy `mcp.servers` entries without mcpd ownership; refusing to rewrite them",
+            ));
+        };
+        let legacy_names = legacy.keys().cloned().collect::<BTreeSet<_>>();
+        let owned_names = previous.managed.keys().cloned().collect::<BTreeSet<_>>();
+        if legacy_names != owned_names {
+            return Err(self.bad(
+                "legacy `mcp.servers` mixes mcpd-managed and unmanaged entries; refusing to remove it",
+            ));
+        }
+        doc.get_mut("mcp")
+            .and_then(Value::as_object_mut)
+            .expect("validated above")
+            .remove("servers");
+        Ok(legacy_names)
+    }
+
     fn render(&self, name: &str, server: &Server) -> Result<Value> {
         match server {
             Server::Stdio {
@@ -254,7 +306,7 @@ impl JsonAdapter {
                         }));
                 if requires_wrapper {
                     return Ok(if self.profile.open_code {
-                        json!({"type":"local", "command":["mcpd", "exec", name]})
+                        json!({"type":"local", "command":["mcpd", "exec", name], "enabled":true})
                     } else if self.profile.explicit_type {
                         json!({"type":"stdio", "command":"mcpd", "args":["exec", name]})
                     } else {
@@ -304,6 +356,9 @@ impl JsonAdapter {
                 }
                 if !native_env.is_empty() {
                     object.insert(self.profile.env.into(), Value::Object(native_env));
+                }
+                if self.profile.open_code {
+                    object.insert("enabled".into(), json!(true));
                 }
                 Ok(Value::Object(object))
             }
@@ -361,6 +416,9 @@ impl JsonAdapter {
                 if self.profile.open_code && !object.contains_key("oauth") {
                     object.insert("oauth".into(), json!(false));
                 }
+                if self.profile.open_code {
+                    object.insert("enabled".into(), json!(true));
+                }
                 Ok(Value::Object(object))
             }
         }
@@ -376,24 +434,28 @@ impl JsonAdapter {
             .as_object()
             .ok_or_else(|| self.bad(format!("MCP server `{name}` must be an object")))?;
         let remote = object.contains_key(self.profile.remote_url);
-        let allowed: &[&str] = if remote && self.profile.open_code {
-            &[
+        let allowed = if remote && self.profile.open_code {
+            vec![
                 "type",
                 self.profile.remote_url,
                 "headers",
                 "oauth",
-                "disabled",
+                "enabled",
             ]
         } else if remote {
-            &["type", self.profile.remote_url, "headers", "disabled"]
+            vec!["type", self.profile.remote_url, "headers", "disabled"]
         } else {
-            &[
+            vec![
                 "type",
                 "command",
                 "args",
                 "cwd",
                 self.profile.env,
-                "disabled",
+                if self.profile.open_code {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
             ]
         };
         if let Some(field) = object
@@ -402,7 +464,10 @@ impl JsonAdapter {
         {
             return Err(self.bad(format!("MCP server `{name}` uses unsupported native field `{field}` and cannot be imported losslessly")));
         }
-        if object.get("disabled").and_then(Value::as_bool) == Some(true) {
+        if (self.profile.open_code && object.get("enabled").and_then(Value::as_bool) == Some(false))
+            || (!self.profile.open_code
+                && object.get("disabled").and_then(Value::as_bool) == Some(true))
+        {
             return Err(self.bad(format!(
                 "MCP server `{name}` is disabled natively and cannot be imported without changing behavior"
             )));
@@ -558,6 +623,40 @@ fn antigravity_path(paths: &Paths) -> Result<PathBuf> {
     }
 }
 
+fn open_code_path(paths: &Paths) -> Result<(PathBuf, Vec<String>)> {
+    let path = paths
+        .target_config("opencode")
+        .ok_or_else(|| McpdError::TargetUnavailable {
+            target: "opencode".into(),
+            message: "could not determine the OpenCode configuration path".into(),
+            hint: "set MCPD_OPENCODE_CONFIG to an absolute configuration file path".into(),
+        })?;
+    if std::env::var_os("MCPD_OPENCODE_CONFIG").is_some()
+        || std::env::var_os("MCPD_OPENCHAMBER_CONFIG").is_some()
+    {
+        return Ok((path, Vec::new()));
+    }
+    let directory = path.parent().ok_or_else(|| McpdError::InvalidInput {
+        message: format!(
+            "OpenCode configuration path {} has no parent",
+            path.display()
+        ),
+        hint: "set MCPD_OPENCODE_CONFIG to a file beneath a safe configuration directory".into(),
+    })?;
+    let jsonc = directory.join("opencode.jsonc");
+    let json = directory.join("opencode.json");
+    let warnings = if jsonc.exists() && json.exists() {
+        vec![format!(
+            "OpenCode config {} is active; {} also exists and is ignored by mcpd",
+            jsonc.display(),
+            json.display()
+        )]
+    } else {
+        Vec::new()
+    };
+    Ok((path, warnings))
+}
+
 impl TargetAdapter for JsonAdapter {
     fn id(&self) -> &str {
         self.profile.id
@@ -571,12 +670,15 @@ impl TargetAdapter for JsonAdapter {
             || match self.id() {
                 "cursor" => executable_on_path("cursor-agent"),
                 "antigravity" => executable_on_path("antigravity"),
-                "openchamber" => executable_on_path("opencode") || executable_on_path("opencode2"),
+                "opencode" => executable_on_path("opencode") || executable_on_path("opencode2"),
                 _ => false,
             }
     }
     fn config_path(&self) -> &Path {
         &self.path
+    }
+    fn warnings(&self) -> Vec<String> {
+        self.warnings.clone()
     }
     fn secret_capabilities(&self) -> SecretCapabilities {
         SecretCapabilities {
@@ -593,7 +695,7 @@ impl TargetAdapter for JsonAdapter {
             "claude" | "claude-project" | "claude-local" => "claude-json/mcpServers",
             "cursor" => "cursor-jsonc/mcpServers",
             "antigravity" => "antigravity-json/mcpServers",
-            "openchamber" => "opencode-json/mcp.servers",
+            "opencode" => "opencode-jsonc-or-json/mcp",
             _ => "json/mcpServers",
         }
     }
@@ -667,7 +769,11 @@ impl TargetAdapter for JsonAdapter {
                                 != normalize(&self.profile, &value)
                         {
                             return Err(self.bad(format!(
-                                "MCP server `{name}` cannot be imported losslessly"
+                                "MCP server `{name}` cannot be imported losslessly: {}",
+                                semantic_difference(
+                                    &normalize(&self.profile, &value),
+                                    &normalize(&self.profile, &rendered),
+                                )
                             )));
                         }
                         Ok((server, secret_writes))
@@ -726,6 +832,7 @@ impl TargetAdapter for JsonAdapter {
             servers,
             skipped,
             secret_writes: writes,
+            warnings: self.warnings(),
         })
     }
     fn plan(
@@ -734,9 +841,14 @@ impl TargetAdapter for JsonAdapter {
         previous: Option<&TargetState>,
     ) -> Result<TargetPlan> {
         let (before, mut doc) = self.read(true)?;
+        let legacy_owned = self.take_legacy_open_code_servers(&mut doc, previous)?;
         let current = self.servers(&doc)?.cloned().unwrap_or_default();
         let owned = previous
-            .filter(|s| s.config_path == self.path && s.adapter_version == VERSION)
+            .filter(|s| {
+                s.config_path == self.path
+                    && (s.adapter_version == VERSION
+                        || (self.profile.open_code && s.adapter_version == 1))
+            })
             .map(|s| s.managed.clone())
             .unwrap_or_default();
         let target = desired.targets.get(self.id());
@@ -758,15 +870,19 @@ impl TargetAdapter for JsonAdapter {
             let rendered = self.render(&name, server)?;
             let rendered_hash = hash_json(&rendered)?;
             match current.get(&name) {
-                Some(_) if !owned.contains_key(&name) => return Err(McpdError::Conflict {
-                    message: format!(
-                        "{} already has unmanaged MCP server `{name}`",
-                        crate::targets::display_name(self.id())
-                    ),
-                    hint:
-                        "rename the canonical server or import/remove the target entry explicitly"
-                            .into(),
-                }),
+                Some(_) if !owned.contains_key(&name) => {
+                    return Err(McpdError::Conflict {
+                        message: format!(
+                            "{} already has unmanaged MCP server `{name}`",
+                            crate::targets::display_name(self.id())
+                        ),
+                        hint: format!(
+                            "run `mcpd adopt {} {name}` when it matches canonical state, or use `mcpd adopt {} {name} --replace --yes`",
+                            self.id(),
+                            self.id()
+                        ),
+                    });
+                }
                 Some(value) if hash_json(value)? != rendered_hash => {
                     let change = Change {
                         server: name.clone(),
@@ -808,6 +924,17 @@ impl TargetAdapter for JsonAdapter {
                 self.servers_mut(&mut doc)?.remove(name);
             }
         }
+        for name in legacy_owned
+            .iter()
+            .filter(|name| !managed.contains_key(*name))
+        {
+            let change = Change {
+                server: name.clone(),
+                kind: ChangeKind::Remove,
+            };
+            changes.push(change.clone());
+            inventory.managed_drift.push(change);
+        }
         inventory.only_in_target = current
             .keys()
             .filter(|name| !owned.contains_key(*name) && !desired.servers.contains_key(*name))
@@ -832,11 +959,14 @@ impl TargetAdapter for JsonAdapter {
                 .filter(|change| change.kind != ChangeKind::Remove)
                 .map(|change| change.server.clone())
                 .collect::<Vec<_>>();
-            let removed = changes
+            let mut removed = changes
                 .iter()
                 .filter(|change| change.kind == ChangeKind::Remove)
                 .map(|change| change.server.clone())
                 .collect::<Vec<_>>();
+            if !legacy_owned.is_empty() {
+                removed.push("servers".to_owned());
+            }
             super::jsonc::patch_servers(
                 source,
                 &self.profile.servers_path,
@@ -867,6 +997,7 @@ impl TargetAdapter for JsonAdapter {
             inventory,
             next_state,
             state_changed,
+            warnings: self.warnings(),
         })
     }
 }
@@ -933,6 +1064,21 @@ fn normalize(profile: &Profile, value: &Value) -> Value {
     let mut value = value.clone();
     if let Some(o) = value.as_object_mut() {
         o.remove("disabled");
+        if profile.open_code && o.get("enabled") == Some(&json!(true)) {
+            o.remove("enabled");
+        }
+        if profile.open_code && o.get("oauth") == Some(&json!(false)) {
+            o.remove("oauth");
+        }
+        if let Some(url) = o
+            .get(profile.remote_url)
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        {
+            if let Ok(parsed) = url::Url::parse(&url) {
+                o.insert(profile.remote_url.into(), json!(parsed.to_string()));
+            }
+        }
         if !profile.explicit_type {
             o.remove("type");
         } else if o.get("type").and_then(Value::as_str) == Some("streamable-http") {
@@ -940,6 +1086,30 @@ fn normalize(profile: &Profile, value: &Value) -> Value {
         }
     }
     value
+}
+
+fn semantic_difference(native: &Value, rendered: &Value) -> String {
+    let (Some(native), Some(rendered)) = (native.as_object(), rendered.as_object()) else {
+        return "native entry shape differs".into();
+    };
+    let fields = native
+        .keys()
+        .chain(rendered.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|field| native.get(*field) != rendered.get(*field))
+        .map(|field| match field.as_str() {
+            "command" | "url" | "headers" | "environment" => {
+                format!("`{field}` differs (redacted)")
+            }
+            _ => format!("`{field}` differs"),
+        })
+        .collect::<Vec<_>>();
+    if fields.is_empty() {
+        "native entry differs".into()
+    } else {
+        fields.join(", ")
+    }
 }
 fn hash_json(value: &Value) -> Result<String> {
     let bytes = serde_json::to_vec(value).map_err(|error| McpdError::Operational {
@@ -980,7 +1150,7 @@ fn native_env_reference<'a>(profile: &Profile, value: &'a str) -> Option<&'a str
         "cursor" => value
             .strip_prefix("${env:")
             .and_then(|value| value.strip_suffix('}')),
-        "openchamber" => value
+        "opencode" => value
             .strip_prefix("{env:")
             .and_then(|value| value.strip_suffix('}')),
         _ => None,

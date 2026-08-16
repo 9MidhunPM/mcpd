@@ -19,7 +19,7 @@
 
 ## 1. Executive summary
 
-`mcpd` is a local, open-source MCP configuration control plane for developers who use multiple AI clients such as Claude Code, Cursor, Codex, Antigravity, and OpenChamber.
+`mcpd` is a local, open-source MCP configuration control plane for developers who use multiple AI clients such as Claude Code, Cursor, Codex, Antigravity, and OpenCode.
 
 The core problem is simple: MCP server configuration is fragmented across applications, formats, paths, scopes, and authentication models. Adding one server can require repeating the same information in several files and remembering which client expects which schema. Manual edits also create drift, duplicate configuration, accidental secret exposure, and difficult-to-debug failures.
 
@@ -43,7 +43,7 @@ Examples of fragmentation include:
 - Codex uses TOML configuration under `~/.codex/config.toml` with `[mcp_servers.<name>]` entries, and its project-local behavior is influenced by project trust.
 - Antigravity currently exposes a JSON MCP configuration and Google's documentation shows a central user-level MCP config under the `.gemini` configuration hierarchy.
 - Cursor supports local and remote MCP transports and its configuration format differs from the TOML-based Codex model.
-- OpenChamber is built around OpenCode and has an evolving MCP/settings surface, so adapter boundaries must be resilient to client changes.
+- OpenCode has an evolving MCP/settings surface, so adapter boundaries must be resilient to client changes.
 
 The product should therefore optimize for **translation, ownership, safety, diagnostics, and evolvability**, rather than pretending every client shares one schema.
 
@@ -104,7 +104,7 @@ Build the foundations for profiles, richer health checks, new targets, plugin me
    - Cursor
    - Codex
    - Antigravity
-   - OpenChamber / OpenCode-compatible MCP configuration
+   - OpenCode-compatible MCP configuration
 4. Detect supported clients without automatically modifying them.
 5. Project canonical servers into enabled targets.
 6. Preserve unmanaged target entries.
@@ -161,7 +161,7 @@ Detected clients:
   ✓ Cursor
   ✓ Codex
   ✓ Antigravity
-  ✓ OpenChamber
+  ✓ OpenCode
 
 No clients were modified.
 Run `mcpd targets enable <name>` to select targets.
@@ -198,7 +198,7 @@ $ mcpd sync
 ✓ Cursor            3 servers synchronized
 ✓ Codex             3 servers synchronized
 ✓ Antigravity       3 servers synchronized
-✓ OpenChamber       3 servers synchronized
+✓ OpenCode          3 servers synchronized
 ```
 
 ### Inspect state
@@ -217,7 +217,7 @@ Targets
   ✓ Cursor          synchronized
   ! Codex           drift detected
   ✓ Antigravity     synchronized
-  ○ OpenChamber     disabled
+  ○ OpenCode         disabled
 ```
 
 ### Dry run
@@ -407,9 +407,9 @@ Because Codex configuration behavior has changed across releases, the adapter mu
 
 Antigravity's MCP configuration is JSON-based. Current Google documentation exposes MCP configuration under the `.gemini` configuration hierarchy and explicitly documents a user-level `mcp_config.json`. Exact path resolution must remain adapter-version-aware because Google's documentation has exposed more than one `.gemini` path across iterations.
 
-### OpenChamber
+### OpenCode
 
-OpenChamber is an OpenCode interface with an evolving MCP/settings surface. The mcpd adapter should target the underlying OpenCode-compatible MCP configuration where possible rather than depending tightly on OpenChamber UI behavior. The adapter must therefore detect the actual local OpenCode/OpenChamber configuration and preserve unrelated settings.
+OpenCode has an evolving MCP/settings surface. The mcpd adapter targets the underlying OpenCode configuration and preserves unrelated settings; `openchamber` is retained only as a deprecated compatibility alias.
 
 ## 12. Custom target definitions
 
@@ -450,7 +450,7 @@ may report:
 ✓ installed    Cursor
 ✓ installed    Codex
 ✓ installed    Antigravity
-○ not detected OpenChamber
+○ not detected OpenCode
 ```
 
 Detection must never imply authorization to modify a target.
@@ -677,7 +677,7 @@ mcpd systemd uninstall
 
 Generated service should run as the user's systemd user unit and restart on failure. It must not require root privileges.
 
-The project must not assume a login shell environment. systemd services should support an explicit environment strategy because developer tools installed in user paths may not be present in a minimal service environment. This is a common issue in OpenChamber/OpenCode systemd deployments as well.
+The project must not assume a login shell environment. systemd services should support an explicit environment strategy because developer tools installed in user paths may not be present in a minimal service environment. This is a common issue in OpenCode systemd deployments as well.
 
 ## 21. CLI command surface
 
@@ -867,7 +867,7 @@ mcpd/
 │   │   ├── cursor.rs
 │   │   ├── codex.rs
 │   │   ├── antigravity.rs
-│   │   └── openchamber.rs
+│   │   └── opencode.rs
 │   ├── secrets/
 │   ├── state/
 │   ├── watch/
@@ -1103,7 +1103,7 @@ The first public release is acceptable when all of the following are true:
 - [x] Cursor adapter passes fixture tests.
 - [x] Codex adapter passes fixture tests.
 - [x] Antigravity adapter passes fixture tests.
-- [x] OpenChamber/OpenCode adapter passes fixture tests.
+- [x] OpenCode adapter passes fixture tests.
 - [x] Unmanaged entries survive sync.
 
 ### Secrets

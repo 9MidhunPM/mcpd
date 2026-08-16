@@ -235,7 +235,7 @@ enabled = true
         .arg("diff")
         .assert()
         .success()
-        .stdout(predicate::str::contains("= synchronized"))
+        .stdout(predicate::str::contains("✓ synced"))
         .stdout(predicate::str::contains("REMOVE").not())
         .stderr(predicate::str::contains("WARNING").not());
     assert_eq!(fs::read(&environment.config).unwrap(), canonical_before);
@@ -254,7 +254,7 @@ enabled = true
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Canonical  0 server(s)"))
+        .stdout(predicate::str::contains("0 canonical server(s)"))
         .stderr(predicate::str::contains("canonical config has no servers"))
         .stderr(predicate::str::contains("3 managed target entry/entries"))
         .stderr(predicate::str::contains("REMOVE Codex: bing-search"));
@@ -271,9 +271,10 @@ enabled = true
         .arg("diff")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Remove\tbing-search"))
-        .stdout(predicate::str::contains("Remove\tdokploy"))
-        .stdout(predicate::str::contains("Remove\tgithub"))
+        .stdout(predicate::str::contains("- remove"))
+        .stdout(predicate::str::contains("bing-search"))
+        .stdout(predicate::str::contains("dokploy"))
+        .stdout(predicate::str::contains("github"))
         .stderr(predicate::str::contains("planned managed removals"));
 
     let before_dry_run = snapshot_tree(environment.root());
@@ -282,9 +283,10 @@ enabled = true
         .args(["sync", "--dry-run"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("REMOVE bing-search"))
-        .stdout(predicate::str::contains("REMOVE dokploy"))
-        .stdout(predicate::str::contains("REMOVE github"))
+        .stdout(predicate::str::contains("- remove"))
+        .stdout(predicate::str::contains("bing-search"))
+        .stdout(predicate::str::contains("dokploy"))
+        .stdout(predicate::str::contains("github"))
         .stderr(predicate::str::contains("removals are blocked by default"));
     assert_eq!(snapshot_tree(environment.root()), before_dry_run);
 
@@ -577,7 +579,8 @@ fn an_unavailable_enabled_adapter_does_not_prevent_other_targets_from_syncing() 
         .arg("doctor")
         .assert()
         .success()
-        .stdout(predicate::str::contains("invalid aaa-missing"));
+        .stdout(predicate::str::contains("aaa-missing"))
+        .stdout(predicate::str::contains("! invalid"));
 }
 
 #[test]
@@ -595,7 +598,7 @@ fn targets_completions_get_and_version_cover_the_v1_command_surface() {
         .stdout(predicate::str::contains("Cursor"))
         .stdout(predicate::str::contains("Codex"))
         .stdout(predicate::str::contains("Antigravity"))
-        .stdout(predicate::str::contains("OpenChamber"));
+        .stdout(predicate::str::contains("OpenCode"));
     environment
         .command()
         .args(["get", "context7"])
@@ -709,7 +712,7 @@ fn enabled_target_has_pending_diff() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Codex"))
-        .stdout(predicate::str::contains("Add"))
+        .stdout(predicate::str::contains("+ add"))
         .stdout(predicate::str::contains("context7"));
 }
 
@@ -727,7 +730,9 @@ fn dry_run_reports_change_without_any_reconciliation_writes() {
         .args(["sync", "--dry-run"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("dry-run Codex: 1 change"));
+        .stdout(predicate::str::contains("Planned changes"))
+        .stdout(predicate::str::contains("+ add"))
+        .stdout(predicate::str::contains("No files were modified."));
 
     assert_eq!(fs::read(&environment.codex).unwrap(), original_codex);
     assert!(!environment.state.exists());
@@ -780,7 +785,7 @@ fn second_sync_is_a_byte_for_byte_noop() {
         .arg("sync")
         .assert()
         .success()
-        .stdout(predicate::str::contains("already synchronized"));
+        .stdout(predicate::str::contains("✓ synced"));
 
     assert_eq!(fs::read(&environment.codex).unwrap(), target_after_first);
     assert_eq!(
@@ -805,9 +810,9 @@ fn managed_server_removal_lifecycle_is_safe_and_dry_run_is_absolutely_pure() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Codex"))
-        .stdout(predicate::str::contains("= synchronized"))
-        .stdout(predicate::str::contains("Add").not())
-        .stdout(predicate::str::contains("Remove").not());
+        .stdout(predicate::str::contains("✓ synced"))
+        .stdout(predicate::str::contains("+ add").not())
+        .stdout(predicate::str::contains("- remove").not());
 
     let target_before_removal = fs::read(&environment.codex).unwrap();
     let state_before_removal = snapshot_tree(&environment.state);
@@ -831,7 +836,7 @@ fn managed_server_removal_lifecycle_is_safe_and_dry_run_is_absolutely_pure() {
         .arg("diff")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Remove"))
+        .stdout(predicate::str::contains("- remove"))
         .stdout(predicate::str::contains("context7"));
 
     let before_dry_run = snapshot_tree(environment.root());
@@ -840,7 +845,8 @@ fn managed_server_removal_lifecycle_is_safe_and_dry_run_is_absolutely_pure() {
         .args(["sync", "--dry-run"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("dry-run Codex: 1 change"));
+        .stdout(predicate::str::contains("Planned changes"))
+        .stdout(predicate::str::contains("- remove"));
     assert_eq!(
         snapshot_tree(environment.root()),
         before_dry_run,
@@ -870,7 +876,7 @@ fn managed_server_removal_lifecycle_is_safe_and_dry_run_is_absolutely_pure() {
         .arg("diff")
         .assert()
         .success()
-        .stdout(predicate::str::contains("= synchronized"));
+        .stdout(predicate::str::contains("✓ synced"));
 }
 
 #[test]
@@ -892,7 +898,7 @@ fn extended_diff_separates_managed_unmanaged_and_canonical_only_servers() {
         .arg("diff")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Add\tpostgres"))
+        .stdout(predicate::str::contains("+ add"))
         .stdout(predicate::str::contains("github").not())
         .stdout(predicate::str::contains("playwright").not())
         .stdout(predicate::str::contains("dokploy").not());
@@ -903,15 +909,11 @@ fn extended_diff_separates_managed_unmanaged_and_canonical_only_servers() {
         .args(["diff", "--all"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Managed (synchronized)"))
-        .stdout(predicate::str::contains("= context7"))
-        .stdout(predicate::str::contains("Managed drift\n  (none)"))
-        .stdout(predicate::str::contains("Only in Codex (unmanaged)"))
-        .stdout(predicate::str::contains("+ github"))
-        .stdout(predicate::str::contains("+ playwright"))
-        .stdout(predicate::str::contains("+ dokploy"))
-        .stdout(predicate::str::contains("Only in mcpd"))
-        .stdout(predicate::str::contains("- postgres"));
+        .stdout(predicate::str::contains("Server matrix"))
+        .stdout(predicate::str::contains("✓ synced"))
+        .stdout(predicate::str::contains("+ unmanaged"))
+        .stdout(predicate::str::contains("- missing"))
+        .stdout(predicate::str::contains("postgres"));
     assert_eq!(snapshot_tree(environment.root()), before_diff);
 }
 
@@ -935,10 +937,10 @@ fn extended_diff_reports_managed_drift_without_mutating_target() {
         .args(["diff", "--include-unmanaged"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Managed drift"))
-        .stdout(predicate::str::contains("~ context7"))
-        .stdout(predicate::str::contains("Only in Codex (unmanaged)"))
-        .stdout(predicate::str::contains("+ github"));
+        .stdout(predicate::str::contains("Server matrix"))
+        .stdout(predicate::str::contains("~ drifted"))
+        .stdout(predicate::str::contains("+ unmanaged"))
+        .stdout(predicate::str::contains("github"));
     assert_eq!(snapshot_tree(environment.root()), before_diff);
 }
 
@@ -1006,6 +1008,287 @@ fn unmanaged_name_collision_is_not_adopted_or_overwritten() {
     assert_eq!(fs::read(&environment.codex).unwrap(), original);
     assert!(!environment.state.join("state.toml").exists());
     assert!(!environment.state.join("backups").exists());
+}
+
+#[test]
+fn adopt_claims_equivalent_collision_without_rewriting_and_replace_is_explicit() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.write_codex(
+        "[mcp_servers.context7]\ncommand = 'npx'\nargs = ['-y', '@upstash/context7-mcp']\n",
+    );
+    environment.add_context7_no_sync();
+    environment.enable_codex();
+    let before = fs::read(&environment.codex).unwrap();
+    environment
+        .command()
+        .args(["adopt", "codex", "context7"])
+        .assert()
+        .success();
+    assert_eq!(fs::read(&environment.codex).unwrap(), before);
+    environment
+        .command()
+        .args(["adopt", "codex", "context7"])
+        .assert()
+        .success();
+
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.write_codex("[mcp_servers.context7]\ncommand = 'manual'\n");
+    environment.add_context7_no_sync();
+    environment.enable_codex();
+    let before = fs::read(&environment.codex).unwrap();
+    environment
+        .command()
+        .args(["adopt", "codex", "context7"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("definition differs"))
+        .stderr(predicate::str::contains(
+            "command (<redacted> -> <redacted>)",
+        ));
+    assert_eq!(fs::read(&environment.codex).unwrap(), before);
+    environment
+        .command()
+        .args(["adopt", "codex", "context7", "--replace", "--yes"])
+        .assert()
+        .success();
+    assert!(
+        fs::read_to_string(&environment.codex)
+            .unwrap()
+            .contains("@upstash/context7-mcp")
+    );
+}
+
+#[test]
+fn adopt_dry_run_and_all_preserve_unmanaged_entries() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.write_codex("[mcp_servers.context7]\ncommand = 'npx'\nargs = ['-y', '@upstash/context7-mcp']\n[mcp_servers.manual]\ncommand = 'manual'\n");
+    environment.add_context7_no_sync();
+    environment.enable_codex();
+    let before = snapshot_tree(environment.root());
+    environment
+        .command()
+        .args(["adopt", "codex", "context7", "--dry-run"])
+        .assert()
+        .success();
+    assert_eq!(snapshot_tree(environment.root()), before);
+    environment
+        .command()
+        .args(["adopt", "codex", "--all"])
+        .assert()
+        .success();
+    assert!(environment.parse_codex()["mcp_servers"]["manual"].is_table());
+}
+
+#[test]
+fn adopt_all_is_all_or_nothing_when_a_canonical_server_is_missing() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment.write_codex(
+        "[mcp_servers.context7]\ncommand = 'npx'\nargs = ['-y', '@upstash/context7-mcp']\n",
+    );
+    environment.add_context7_no_sync();
+    environment
+        .command()
+        .args(["add", "github", "--no-sync", "--", "canonical-github"])
+        .assert()
+        .success();
+    environment.enable_codex();
+
+    environment
+        .command()
+        .args(["adopt", "codex", "--all"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("cannot adopt `github`"));
+    assert!(!environment.state.join("state.toml").exists());
+}
+
+#[test]
+fn adopt_replace_is_scoped_to_the_requested_claude_server() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    for (name, command) in [
+        ("dokploy", "canonical-dokploy"),
+        ("github", "canonical-github"),
+    ] {
+        environment
+            .command()
+            .args(["add", name, "--no-sync", "--", command])
+            .assert()
+            .success();
+    }
+    environment
+        .command()
+        .args(["targets", "enable", "claude"])
+        .assert()
+        .success();
+    let claude = environment.home.join(".claude.json");
+    fs::create_dir_all(claude.parent().unwrap()).unwrap();
+    fs::write(
+        &claude,
+        r#"{"mcpServers":{"dokploy":{"type":"stdio","command":"manual-dokploy"},"github":{"type":"stdio","command":"manual-github"}},"keep":"unmanaged"}"#,
+    )
+    .unwrap();
+
+    environment
+        .command()
+        .args(["adopt", "claude", "dokploy", "--replace", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("replace"))
+        .stdout(predicate::str::contains("dokploy"));
+    environment
+        .command()
+        .args(["adopt", "claude", "dokploy", "--replace", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("replace"))
+        .stdout(predicate::str::contains("dokploy"));
+
+    let target: serde_json::Value = serde_json::from_slice(&fs::read(&claude).unwrap()).unwrap();
+    assert_eq!(
+        target["mcpServers"]["dokploy"]["command"],
+        "canonical-dokploy"
+    );
+    assert_eq!(target["mcpServers"]["github"]["command"], "manual-github");
+    assert_eq!(target["keep"], "unmanaged");
+    let state: toml::Value =
+        toml::from_str(&fs::read_to_string(environment.state.join("state.toml")).unwrap()).unwrap();
+    let managed = state["targets"]["claude"]["managed"].as_table().unwrap();
+    assert!(managed.contains_key("dokploy"));
+    assert!(!managed.contains_key("github"));
+
+    environment
+        .command()
+        .args(["sync", "--target", "claude"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains("unmanaged MCP server `github`"))
+        .stderr(predicate::str::contains("dokploy").not());
+}
+
+#[test]
+fn import_all_groups_equivalent_clients_and_is_idempotent() {
+    let environment = TestEnvironment::new();
+    environment.write_codex(
+        "[mcp_servers.context7]\ncommand = 'npx'\nargs = ['-y', '@upstash/context7-mcp']\n",
+    );
+    let claude = environment.home.join(".claude.json");
+    fs::create_dir_all(claude.parent().unwrap()).unwrap();
+    fs::write(
+        &claude,
+        r#"{"mcpServers":{"context7":{"type":"stdio","command":"npx","args":["-y","@upstash/context7-mcp"]}},"keep":"unmanaged"}"#,
+    )
+    .unwrap();
+
+    let before = snapshot_tree(environment.root());
+    environment
+        .command()
+        .args(["import", "all", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("onboarding review"))
+        .stdout(predicate::str::contains("equivalent duplicate"))
+        .stdout(predicate::str::contains(
+            "No files, keyring entries, or ownership state were modified.",
+        ));
+    assert_eq!(snapshot_tree(environment.root()), before);
+
+    environment
+        .command()
+        .args(["import", "all", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("✓ Canonical: 1 server(s)"));
+    assert!(
+        environment.parse_config()["servers"]
+            .get("context7")
+            .is_some()
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&claude).unwrap()).unwrap()["keep"],
+        "unmanaged"
+    );
+    environment
+        .command()
+        .args(["import", "all", "--yes"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn import_all_requires_an_explicit_choice_for_conflicts_without_yes() {
+    let environment = TestEnvironment::new();
+    environment.write_codex("[mcp_servers.context7]\ncommand = 'codex-command'\n");
+    let claude = environment.home.join(".claude.json");
+    fs::create_dir_all(claude.parent().unwrap()).unwrap();
+    fs::write(
+        &claude,
+        r#"{"mcpServers":{"context7":{"type":"stdio","command":"claude-command"}}}"#,
+    )
+    .unwrap();
+
+    environment
+        .command()
+        .args(["import", "all", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("conflict: needs a choice"))
+        .stdout(predicate::str::contains("command <redacted>"))
+        .stdout(predicate::str::contains("Conflicts skipped: context7"));
+    assert!(!environment.config.exists());
+}
+
+#[test]
+fn import_all_target_filter_json_and_no_sync_preserve_target_configuration() {
+    let environment = TestEnvironment::new();
+    environment.write_codex("[mcp_servers.github]\ncommand = 'github-mcp'\n");
+    let before = fs::read(&environment.codex).unwrap();
+
+    environment
+        .command()
+        .args(["--json", "import", "all", "--target", "codex", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""name": "github""#))
+        .stdout(predicate::str::contains(r#""dry_run": true"#));
+    environment
+        .command()
+        .args(["import", "all", "--target", "codex", "--no-sync"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Synchronization deferred (--no-sync).",
+        ));
+    assert!(
+        environment.parse_config()["servers"]
+            .get("github")
+            .is_some()
+    );
+    assert_eq!(fs::read(&environment.codex).unwrap(), before);
+}
+
+#[test]
+fn openchamber_alias_migrates_to_opencode_without_breaking_commands() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    environment
+        .command()
+        .args(["targets", "enable", "openchamber"])
+        .assert()
+        .success();
+    let config = environment.parse_config();
+    assert!(config["targets"].get("opencode").is_some());
+    assert!(config["targets"].get("openchamber").is_none());
+    environment
+        .command()
+        .args(["doctor", "--target", "openchamber"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("OpenCode"));
 }
 
 #[test]
@@ -1125,8 +1408,9 @@ command = "playwright-mcp"
         .args(["import", "codex", "github"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Completed import from Codex"))
-        .stdout(predicate::str::contains("+ github\tstdio"))
+        .stdout(predicate::str::contains("Completed import — Codex"))
+        .stdout(predicate::str::contains("+ import"))
+        .stdout(predicate::str::contains("github"))
         .stdout(predicate::str::contains(
             "Target configuration was not modified",
         ));
@@ -1151,14 +1435,14 @@ command = "playwright-mcp"
         .arg("diff")
         .assert()
         .success()
-        .stdout(predicate::str::contains("= synchronized"));
+        .stdout(predicate::str::contains("✓ synced"));
     let before_sync = snapshot_tree(environment.root());
     environment
         .command()
         .arg("sync")
         .assert()
         .success()
-        .stdout(predicate::str::contains("already synchronized"));
+        .stdout(predicate::str::contains("✓ synced"));
     assert_eq!(snapshot_tree(environment.root()), before_sync);
 }
 
@@ -1184,9 +1468,10 @@ Authorization = "DOCS_TOKEN"
         .args(["import", "codex", "--all"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Completed import from Codex"))
-        .stdout(predicate::str::contains("+ docs\thttp"))
-        .stdout(predicate::str::contains("+ github\tstdio"));
+        .stdout(predicate::str::contains("Completed import — Codex"))
+        .stdout(predicate::str::contains("+ import"))
+        .stdout(predicate::str::contains("docs"))
+        .stdout(predicate::str::contains("github"));
 
     assert_eq!(fs::read(&environment.codex).unwrap(), target_before);
     let canonical = environment.parse_config();
@@ -1209,9 +1494,8 @@ Authorization = "DOCS_TOKEN"
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Codex     disabled  2 managed / 0 unmanaged",
-        ));
+        .stdout(predicate::str::contains("- disabled"))
+        .stdout(predicate::str::contains("2"));
 }
 
 #[test]
@@ -1226,7 +1510,7 @@ fn import_dry_run_performs_absolutely_no_writes() {
         .args(["import", "codex", "github", "--dry-run"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Dry-run import from Codex"))
+        .stdout(predicate::str::contains("Dry-run import — Codex"))
         .stdout(predicate::str::contains(
             "No files or ownership state were modified",
         ));
@@ -1254,9 +1538,11 @@ fn bulk_import_skips_canonical_collisions_without_overwriting_them() {
         .args(["import", "codex", "--all"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("+ docs\thttp"))
-        .stdout(predicate::str::contains("Skipped"))
-        .stdout(predicate::str::contains("! github\talready exists"));
+        .stdout(predicate::str::contains("+ import"))
+        .stdout(predicate::str::contains("docs"))
+        .stdout(predicate::str::contains("! skipped"))
+        .stdout(predicate::str::contains("github"))
+        .stdout(predicate::str::contains("already exists"));
 
     assert_eq!(fs::read(&environment.codex).unwrap(), target_before);
     assert!(environment.parse_config()["servers"].get("docs").is_some());
@@ -1294,11 +1580,11 @@ GH_TOKEN = "skipped-secret-canary"
         .args(["import", "codex", "--all"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Imported"))
-        .stdout(predicate::str::contains("+ github\tstdio"))
-        .stdout(predicate::str::contains("+ playwright\tstdio"))
-        .stdout(predicate::str::contains("Skipped"))
-        .stdout(predicate::str::contains("! gh_grep\t"))
+        .stdout(predicate::str::contains("+ import"))
+        .stdout(predicate::str::contains("github"))
+        .stdout(predicate::str::contains("playwright"))
+        .stdout(predicate::str::contains("! skipped"))
+        .stdout(predicate::str::contains("gh_grep"))
         .stdout(predicate::str::contains(
             "unsupported field `startup_timeout_sec`",
         ))
@@ -1453,7 +1739,8 @@ fn status_distinguishes_disabled_synced_and_drifted_with_counts() {
         .assert()
         .success()
         .stdout(predicate::str::contains("disabled"))
-        .stdout(predicate::str::contains("1 managed / 1 unmanaged"));
+        .stdout(predicate::str::contains("| Codex"))
+        .stdout(predicate::str::contains("| 1       | 1"));
     environment.enable_codex();
     environment
         .command()
@@ -1461,7 +1748,8 @@ fn status_distinguishes_disabled_synced_and_drifted_with_counts() {
         .assert()
         .success()
         .stdout(predicate::str::contains("synced"))
-        .stdout(predicate::str::contains("1 managed / 1 unmanaged"));
+        .stdout(predicate::str::contains("| Codex"))
+        .stdout(predicate::str::contains("| 1       | 1"));
 
     let drifted = fs::read_to_string(&environment.codex)
         .unwrap()
@@ -1473,7 +1761,8 @@ fn status_distinguishes_disabled_synced_and_drifted_with_counts() {
         .assert()
         .success()
         .stdout(predicate::str::contains("drifted"))
-        .stdout(predicate::str::contains("1 pending"));
+        .stdout(predicate::str::contains("~ drifted"))
+        .stdout(predicate::str::contains("| 1"));
 }
 
 #[test]
@@ -1493,10 +1782,9 @@ fn repeated_bulk_import_skips_managed_entries_without_writes() {
         .args(["import", "codex", "--all"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Skipped"))
-        .stdout(predicate::str::contains(
-            "! github\talready managed by mcpd",
-        ));
+        .stdout(predicate::str::contains("! skipped"))
+        .stdout(predicate::str::contains("github"))
+        .stdout(predicate::str::contains("already managed by mcpd"));
 
     assert_eq!(snapshot_tree(environment.root()), before);
 }
@@ -1643,7 +1931,7 @@ enabled = true
         .arg("sync")
         .assert()
         .success()
-        .stdout(predicate::str::contains("already synchronized"));
+        .stdout(predicate::str::contains("✓ synced"));
     assert_eq!(fs::read_to_string(&environment.codex).unwrap(), target);
     assert_eq!(snapshot_tree(&environment.state), state_after_sync);
 
@@ -1690,7 +1978,8 @@ args = ["exec", "secure"]
         .args(["doctor", "--target", "codex"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("invalid Codex"))
+        .stdout(predicate::str::contains("Codex"))
+        .stdout(predicate::str::contains("! invalid"))
         .stdout(predicate::str::contains("DBUS_SESSION_BUS_ADDRESS"))
         .stdout(predicate::str::contains("mcpd sync --target codex"));
     environment
@@ -1710,8 +1999,71 @@ args = ["exec", "secure"]
         .args(["doctor", "--target", "codex"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("ok Codex"))
+        .stdout(predicate::str::contains("Codex"))
+        .stdout(predicate::str::contains("✓ valid"))
         .stdout(predicate::str::contains("DBUS_SESSION_BUS_ADDRESS").not());
+}
+
+#[test]
+fn doctor_and_sync_report_the_active_open_code_config_when_both_exist() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    fs::write(
+        &environment.config,
+        r#"version = 1
+
+[servers.managed]
+transport = "stdio"
+command = "managed-command"
+
+[targets.opencode]
+enabled = true
+"#,
+    )
+    .unwrap();
+    let directory = environment
+        .config
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("opencode");
+    let jsonc = directory.join("opencode.jsonc");
+    let json = directory.join("opencode.json");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        &jsonc,
+        r#"{
+  // active config
+  "theme": "keep",
+  "mcp": { "manual": { "type": "local", "command": ["manual"], "enabled": true, }, },
+}"#,
+    )
+    .unwrap();
+    fs::write(&json, r#"{"ignored":"keep-byte-for-byte"}"#).unwrap();
+    let json_before = fs::read(&json).unwrap();
+
+    environment
+        .command()
+        .args(["doctor", "--target", "opencode"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "active OpenCode config: {}",
+            jsonc.display()
+        )))
+        .stderr(predicate::str::contains("ignored by mcpd"));
+    environment
+        .command()
+        .args(["sync", "--target", "opencode"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("ignored by mcpd"));
+
+    let rendered = fs::read_to_string(&jsonc).unwrap();
+    assert!(rendered.contains("// active config"));
+    assert!(rendered.contains("managed-command"));
+    assert_eq!(fs::read(json).unwrap(), json_before);
 }
 
 #[test]
@@ -1742,7 +2094,8 @@ TOKEN = { secret = "missing.token" }
         .arg("doctor")
         .assert()
         .success()
-        .stdout(predicate::str::contains("missing secret `missing.token`"));
+        .stdout(predicate::str::contains("missing.token"))
+        .stdout(predicate::str::contains("! missing"));
     environment
         .command()
         .args(["secret", "set", "missing.token"])
@@ -1754,7 +2107,8 @@ TOKEN = { secret = "missing.token" }
         .arg("doctor")
         .assert()
         .success()
-        .stdout(predicate::str::contains("present secret `missing.token`"))
+        .stdout(predicate::str::contains("missing.token"))
+        .stdout(predicate::str::contains("✓ present"))
         .stdout(predicate::str::contains("doctor-canary").not());
 }
 
@@ -1814,7 +2168,7 @@ fn secret_import_dry_run_has_zero_writes() {
         .args(["import", "codex", "github", "--dry-run"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Dry-run import from Codex"))
+        .stdout(predicate::str::contains("Dry-run import — Codex"))
         .stdout(predicate::str::contains("dry-run-canary").not());
 
     assert_eq!(snapshot_tree(environment.root()), before);

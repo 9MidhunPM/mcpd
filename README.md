@@ -2,7 +2,7 @@
 
 `mcpd` is a local MCP configuration control plane: configure an MCP server once, then safely project it into supported clients without deleting configuration that `mcpd` does not own.
 
-The Linux v1.0 implementation supports global and trusted project configuration, Codex, Claude Code, Cursor, Antigravity, and OpenChamber through OpenCode. It includes stdio and Streamable HTTP servers, safe import and synchronization, JSONC-aware edits, OS-keyring secrets, runtime secret injection, declarative custom targets, discovery, watch mode, user-level systemd integration, and shell completions.
+The Linux v1.0 implementation supports global and trusted project configuration, Codex, Claude Code, Cursor, Antigravity, and OpenCode. It includes stdio and Streamable HTTP servers, safe import and synchronization, JSONC-aware edits, OS-keyring secrets, runtime secret injection, declarative custom targets, discovery, watch mode, user-level systemd integration, and shell completions.
 
 ## Scope
 
@@ -40,22 +40,10 @@ curl -fsSL https://raw.githubusercontent.com/9MidhunPM/mcpd/v1.0.0/scripts/insta
 ## Quick start
 
 ```sh
-mcpd init
-mcpd add context7 --no-sync -- npx -y @upstash/context7-mcp
-mcpd targets enable codex
-mcpd targets enable claude
-mcpd targets enable cursor
-mcpd diff --all
-mcpd import codex github --dry-run
-mcpd import codex github
-mcpd secret set github.token
-mcpd doctor
-mcpd sync --dry-run
-mcpd sync
-mcpd status
-mcpd doctor
-mcpd systemd install
+mcpd import all
 ```
+
+For a fresh install, start with `mcpd import all`. It scans readable supported client configurations, groups equivalent MCP servers, presents a review, and imports safely representable definitions without changing target files until you approve the follow-up synchronization. Use `--dry-run` to review without writes, `--yes` for non-interactive automation, `--target TARGET` to narrow discovery, and `--no-sync` to defer target reconciliation.
 
 Add a Streamable HTTP server with:
 
@@ -80,7 +68,7 @@ enabled = true
 enabled = true
 ```
 
-`mcpd` refuses to overwrite a same-name unmanaged target entry until that entry is explicitly imported or removed. Once an entry is owned, canonical state is authoritative and `mcpd diff` reports external drift before `mcpd sync` repairs it.
+`mcpd` refuses to overwrite a same-name unmanaged target entry until it is explicitly adopted with `mcpd adopt TARGET SERVER`. When definitions differ, `mcpd adopt TARGET SERVER --replace --yes` replaces only that named entry and records only that ownership; it does not run a full synchronization. The diagnostic reports a redacted semantic diff. `mcpd adopt TARGET --all` is all-or-nothing: if any canonical server cannot be safely adopted, no ownership changes are made. Once an entry is owned, canonical state is authoritative and `mcpd diff` reports external drift before `mcpd sync` repairs it.
 
 Canonical loss is treated as a recovery event, not as an empty desired state. If the canonical file is missing while ownership state still records managed servers, `mcpd init` refuses to create an empty replacement and names the servers that must be recovered. Schema rewrites must preserve every canonical and owned server, create a private canonical backup, and atomically replace the file; unsupported schema versions are never reinterpreted implicitly.
 

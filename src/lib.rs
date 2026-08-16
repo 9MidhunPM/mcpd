@@ -1,9 +1,11 @@
+pub mod adopt;
 pub mod cli;
 pub mod config;
 pub mod diagnostics;
 pub mod execution;
 pub mod import;
 pub mod model;
+pub mod onboard;
 pub mod output;
 pub mod resolve;
 pub mod secrets;
@@ -55,6 +57,14 @@ impl Paths {
     }
 
     pub fn target_config(&self, target: &str) -> Option<PathBuf> {
+        if matches!(target, "opencode" | "openchamber") {
+            if let Some(path) = std::env::var_os("MCPD_OPENCODE_CONFIG") {
+                return Some(PathBuf::from(path));
+            }
+            if let Some(path) = std::env::var_os("MCPD_OPENCHAMBER_CONFIG") {
+                return Some(PathBuf::from(path));
+            }
+        }
         let override_name = format!("MCPD_{}_CONFIG", target.to_ascii_uppercase());
         if let Some(path) = std::env::var_os(override_name) {
             return Some(PathBuf::from(path));
@@ -64,13 +74,20 @@ impl Paths {
             "claude" => Some(self.home.join(".claude.json")),
             "cursor" => Some(self.home.join(".cursor/mcp.json")),
             "antigravity" => Some(self.home.join(".gemini/config/mcp_config.json")),
-            "openchamber" => Some(
-                self.config
+            "opencode" | "openchamber" => {
+                let directory = self
+                    .config
                     .parent()
                     .and_then(|path| path.parent())
                     .unwrap_or(self.home.as_path())
-                    .join("opencode/opencode.json"),
-            ),
+                    .join("opencode");
+                let jsonc = directory.join("opencode.jsonc");
+                Some(if jsonc.exists() {
+                    jsonc
+                } else {
+                    directory.join("opencode.json")
+                })
+            }
             _ => None,
         }
     }

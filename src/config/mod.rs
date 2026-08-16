@@ -31,10 +31,16 @@ pub fn load(path: &Path) -> Result<CanonicalConfig> {
 }
 
 pub fn parse(text: &str, path: &Path) -> Result<CanonicalConfig> {
-    let config: CanonicalConfig = toml::from_str(text).map_err(|_| McpdError::InvalidInput {
-        message: format!("{} is not a valid mcpd configuration", path.display()),
-        hint: "fix the reported field or run `mcpd init` if this is a new configuration".into(),
-    })?;
+    let mut config: CanonicalConfig =
+        toml::from_str(text).map_err(|_| McpdError::InvalidInput {
+            message: format!("{} is not a valid mcpd configuration", path.display()),
+            hint: "fix the reported field or run `mcpd init` if this is a new configuration".into(),
+        })?;
+    if !config.targets.contains_key("opencode") {
+        if let Some(legacy) = config.targets.remove("openchamber") {
+            config.targets.insert("opencode".into(), legacy);
+        }
+    }
     validate(&config, path)?;
     Ok(config)
 }
@@ -446,6 +452,11 @@ pub fn remove_server(path: &Path, name: &str) -> Result<()> {
 }
 
 pub fn set_target_enabled(path: &Path, target: &str, enabled: bool) -> Result<()> {
+    let target = if target == "openchamber" {
+        "opencode"
+    } else {
+        target
+    };
     mutate(path, |doc| {
         let targets = ensure_table(doc, "targets")?;
         if !targets.contains_key(target) {

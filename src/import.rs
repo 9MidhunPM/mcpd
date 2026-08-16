@@ -29,6 +29,7 @@ pub struct ImportReport {
     pub imported: Vec<ImportedEntry>,
     pub skipped: Vec<ImportSkipped>,
     pub migrated_secrets: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 struct PreparedImport {
@@ -41,6 +42,7 @@ struct PreparedImport {
     skipped: Vec<ImportSkipped>,
     secret_writes: Vec<crate::secrets::SecretWrite>,
     migrated_secrets: Vec<String>,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -237,6 +239,7 @@ fn prepare(
         skipped,
         secret_writes: imported.secret_writes,
         migrated_secrets,
+        warnings: imported.warnings,
     })
 }
 
@@ -254,10 +257,11 @@ fn report(prepared: &PreparedImport, dry_run: bool) -> ImportReport {
         imported: prepared.imported.clone(),
         skipped: prepared.skipped.clone(),
         migrated_secrets: prepared.migrated_secrets.clone(),
+        warnings: prepared.warnings.clone(),
     }
 }
 
-fn resolve_secret_mappings(
+pub(crate) fn resolve_secret_mappings(
     target: &str,
     selection: Option<&BTreeSet<String>>,
     paths: &Paths,

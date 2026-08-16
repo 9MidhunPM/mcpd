@@ -213,6 +213,7 @@ impl TargetAdapter for CodexAdapter {
                     value: crate::secrets::SecretValue::new(value),
                 })
                 .collect(),
+            warnings: self.warnings(),
         })
     }
 
@@ -269,17 +270,29 @@ impl TargetAdapter for CodexAdapter {
             let rendered_hash = hash_item(&expected)?;
             let canonical_hash = hash_serializable(server)?;
             match current.get(name) {
-                Some(_) if !owned.contains_key(name) => return Err(McpdError::Conflict {
-                    message: format!("Codex already has unmanaged MCP server `{name}`"),
-                    hint: "rename the canonical server or remove/import the existing Codex entry explicitly".into(),
-                }),
+                Some(_) if !owned.contains_key(name) => {
+                    return Err(McpdError::Conflict {
+                        message: format!("Codex already has unmanaged MCP server `{name}`"),
+                        hint: format!(
+                            "run `mcpd adopt codex {name}` when it matches canonical state, or use `mcpd adopt codex {name} --replace --yes`"
+                        ),
+                    });
+                }
                 Some(item) => {
                     let current_hash = hash_item(item)?;
                     if current_hash != rendered_hash {
-                        let kind = if owned.get(name).is_some_and(|record| record.rendered_hash != current_hash) {
+                        let kind = if owned
+                            .get(name)
+                            .is_some_and(|record| record.rendered_hash != current_hash)
+                        {
                             ChangeKind::DriftRepair
-                        } else { ChangeKind::Update };
-                        let change = Change { server: name.clone(), kind };
+                        } else {
+                            ChangeKind::Update
+                        };
+                        let change = Change {
+                            server: name.clone(),
+                            kind,
+                        };
                         inventory.managed_drift.push(change.clone());
                         changes.push(change);
                         set_server(&mut doc, name, expected)?;
@@ -359,6 +372,7 @@ impl TargetAdapter for CodexAdapter {
                 managed,
             },
             state_changed,
+            warnings: self.warnings(),
         })
     }
 

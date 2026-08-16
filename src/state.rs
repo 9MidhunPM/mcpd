@@ -59,7 +59,7 @@ pub fn load(path: &Path) -> Result<StateFile> {
         return Ok(StateFile::default());
     }
     let text = fs::read_to_string(path).map_err(|source| McpdError::io(path, source))?;
-    let state: StateFile = toml::from_str(&text).map_err(|error| McpdError::InvalidInput {
+    let mut state: StateFile = toml::from_str(&text).map_err(|error| McpdError::InvalidInput {
         message: format!("ownership state {} is malformed: {error}", path.display()),
         hint: "restore the state file from a known-good copy; mcpd will not guess ownership".into(),
     })?;
@@ -72,6 +72,11 @@ pub fn load(path: &Path) -> Result<StateFile> {
             ),
             hint: "use a compatible mcpd release or migrate the state explicitly".into(),
         });
+    }
+    if !state.targets.contains_key("opencode") {
+        if let Some(legacy) = state.targets.remove("openchamber") {
+            state.targets.insert("opencode".into(), legacy);
+        }
     }
     Ok(state)
 }

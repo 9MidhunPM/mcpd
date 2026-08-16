@@ -462,7 +462,10 @@ impl TargetAdapter for DeclarativeAdapter {
                 Some(_) if !owned.contains_key(&name) => {
                     return Err(McpdError::Conflict {
                         message: format!("{} already has unmanaged MCP server `{name}`", self.name),
-                        hint: "rename the canonical server or remove the unmanaged collision explicitly".into(),
+                        hint: format!(
+                            "run `mcpd adopt {} {name}` when it matches canonical state",
+                            self.id
+                        ),
                     });
                 }
                 Some(value) if hash_value(value)? != rendered_hash => {
@@ -571,6 +574,7 @@ impl TargetAdapter for DeclarativeAdapter {
             inventory,
             next_state,
             state_changed,
+            warnings: self.warnings(),
         })
     }
 }
