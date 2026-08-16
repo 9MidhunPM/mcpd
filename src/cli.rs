@@ -772,6 +772,7 @@ fn run_secret_command(cli: &Cli, command: &SecretCommand, paths: &Paths) -> Resu
 fn run_doctor(cli: &Cli, paths: &Paths, selected: &[String], network: bool) -> Result<()> {
     let resolved = crate::resolve::load(paths)?;
     let canonical = resolved.config;
+    let state_file = crate::state::load(&paths.state_dir.join("state.toml"))?;
     let store = crate::secrets::SecretStore::discover(paths)?;
     let checks = crate::secrets::referenced_names(&canonical)
         .into_iter()
@@ -806,14 +807,20 @@ fn run_doctor(cli: &Cli, paths: &Paths, selected: &[String], network: bool) -> R
         .into_iter()
         .map(|adapter| {
             let result = adapter.server_names();
+            let runtime_diagnostic = result.as_ref().ok().and_then(|_| {
+                match adapter.doctor_diagnostic(&canonical, state_file.targets.get(adapter.id())) {
+                    Ok(diagnostic) => diagnostic,
+                    Err(error) => Some(error.to_string()),
+                }
+            });
             serde_json::json!({
                 "target": adapter.id(),
                 "display_name": adapter.display_name(),
                 "detected": adapter.detect(),
                 "config": adapter.config_path(),
-                "valid": result.is_ok(),
+                "valid": result.is_ok() && runtime_diagnostic.is_none(),
                 "servers": result.as_ref().map_or(0, Vec::len),
-                "diagnostic": result.err().map(|error| error.to_string()),
+                "diagnostic": result.err().map(|error| error.to_string()).or(runtime_diagnostic),
                 "compatibility": adapter.compatibility(
                     canonical.targets.get(adapter.id()).and_then(|target| target.client_version.as_deref())
                 ),

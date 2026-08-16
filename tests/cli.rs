@@ -1656,6 +1656,64 @@ enabled = true
         .stderr(predicate::str::contains("runtime-only-canary").not());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn doctor_detects_managed_codex_wrapper_missing_keyring_runtime_forwarding() {
+    let environment = TestEnvironment::new();
+    environment.init();
+    fs::write(
+        &environment.config,
+        r#"version = 1
+
+[servers.secure]
+transport = "stdio"
+command = "/bin/true"
+
+[servers.secure.env]
+TOKEN = { secret = "secure.token" }
+
+[targets.codex]
+enabled = true
+"#,
+    )
+    .unwrap();
+    environment.command().arg("sync").assert().success();
+    environment.write_codex(
+        r#"[mcp_servers.secure]
+command = "mcpd"
+args = ["exec", "secure"]
+"#,
+    );
+
+    environment
+        .command()
+        .args(["doctor", "--target", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("invalid Codex"))
+        .stdout(predicate::str::contains("DBUS_SESSION_BUS_ADDRESS"))
+        .stdout(predicate::str::contains("mcpd sync --target codex"));
+    environment
+        .command()
+        .args(["doctor", "--target", "codex", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""valid": false"#));
+
+    environment
+        .command()
+        .args(["sync", "--target", "codex"])
+        .assert()
+        .success();
+    environment
+        .command()
+        .args(["doctor", "--target", "codex"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok Codex"))
+        .stdout(predicate::str::contains("DBUS_SESSION_BUS_ADDRESS").not());
+}
+
 #[test]
 fn missing_exec_secret_and_doctor_are_safe_and_actionable() {
     let environment = TestEnvironment::new();
