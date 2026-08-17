@@ -20,6 +20,8 @@ target and asks `mcpd` to synchronize an entry it manages.
 
 ```sh
 cargo build
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
@@ -67,6 +69,21 @@ enabled = true
 [targets.codex.servers.context7]
 enabled = true
 ```
+
+For a new canonical configuration, run `mcpd init` first, then add a server and
+enable only the clients you want mcpd to manage:
+
+```sh
+mcpd init
+mcpd add context7 --transport stdio npx -- -y @upstash/context7-mcp
+mcpd targets enable codex
+mcpd sync --dry-run
+mcpd sync
+```
+
+`mcpd targets` detects installed clients but does not enable them. Detection is
+informational; target files are inspected or changed only after explicit
+enablement.
 
 `mcpd` refuses to overwrite a same-name unmanaged target entry until it is explicitly adopted with `mcpd adopt TARGET SERVER`. When definitions differ, `mcpd adopt TARGET SERVER --replace --yes` replaces only that named entry and records only that ownership; it does not run a full synchronization. The diagnostic reports a redacted semantic diff. `mcpd adopt TARGET --all` is all-or-nothing: if any canonical server cannot be safely adopted, no ownership changes are made. Once an entry is owned, canonical state is authoritative and `mcpd diff` reports external drift before `mcpd sync` repairs it.
 
@@ -175,3 +192,22 @@ OS-keyring secret references for HTTP headers are rejected because Codex cannot 
 An optional `client_version = "..."` under a target records the client version used for compatibility diagnostics without executing client binaries during discovery. Native schema/version incompatibilities still fail inside the owning adapter before writes.
 
 See [PRD.md](PRD.md), [SECURITY.md](SECURITY.md), [packaging guidance](docs/packaging.md), and [docs/architecture](docs/architecture) for the product and safety model.
+
+## Documentation
+
+- [Product requirements](PRD.md) — product scope, command behavior, and roadmap.
+- [Security policy](SECURITY.md) — reporting guidance and the v1 security boundary.
+- [Adapter development](docs/adapter-development.md) — responsibilities and fixture expectations for target adapters.
+- [Packaging](docs/packaging.md) — source, binary, and Git package options.
+- [Architecture decisions](docs/architecture) — canonical state, transactions, imports, secrets, trust, and recovery.
+- [Examples](examples) — canonical configuration, project overlays, and declarative target manifests.
+
+Contributors should run the full verification gate before opening a pull
+request:
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+git diff --check
+```
