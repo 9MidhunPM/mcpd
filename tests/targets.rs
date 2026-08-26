@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
-use mcpd::{
+use syncplane::{
     Paths, config, import,
     model::{ConfigValue, Server},
     state::{ManagedServer, StateFile, TargetState},
@@ -12,8 +12,8 @@ use url::Url;
 fn paths(temp: &TempDir) -> Paths {
     let home = temp.path().join("home");
     Paths {
-        config: temp.path().join("config/mcpd/config.toml"),
-        state_dir: temp.path().join("state/mcpd"),
+        config: temp.path().join("config/syncplane/config.toml"),
+        state_dir: temp.path().join("state/syncplane"),
         codex_config: home.join(".codex/config.toml"),
         home,
     }
@@ -41,7 +41,7 @@ fn every_json_adapter_syncs_stdio_and_http_preserves_unmanaged_and_is_idempotent
         "remote",
         &Server::Http {
             url: Url::parse("https://example.com/mcp").unwrap(),
-            headers: BTreeMap::from([("X-Client".into(), ConfigValue::literal("mcpd"))]),
+            headers: BTreeMap::from([("X-Client".into(), ConfigValue::literal("syncplane"))]),
             secrets: BTreeMap::new(),
         },
     )
@@ -99,7 +99,7 @@ fn every_json_adapter_imports_native_stdio_and_remote_without_modifying_source()
         config::init(&paths).unwrap();
         let path = paths.target_config(target).unwrap();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let native = match target { "opencode" => r#"{"other":true,"mcp":{"local":{"type":"local","command":["node","server.js"],"enabled":true,"environment":{"LOG_LEVEL":"info"}},"remote":{"type":"remote","url":"https://example.com/mcp","enabled":true,"oauth":false,"headers":{"Authorization":"{env:REMOTE_TOKEN}"}}}}"#.to_owned(), "antigravity" => r#"{"other":true,"mcpServers":{"local":{"command":"node","args":["server.js"],"env":{"LOG_LEVEL":"info"}},"remote":{"serverUrl":"https://example.com/mcp","headers":{"X-Client":"mcpd"}}}}"#.to_owned(), "cursor" => r#"{"other":true,"mcpServers":{"local":{"command":"node","args":["server.js"],"env":{"LOG_LEVEL":"info"}},"remote":{"url":"https://example.com/mcp","headers":{"Authorization":"${env:REMOTE_TOKEN}"}}}}"#.to_owned(), _ => r#"{"other":true,"mcpServers":{"local":{"type":"stdio","command":"node","args":["server.js"],"env":{"LOG_LEVEL":"info"}},"remote":{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"${REMOTE_TOKEN}"}}}}"#.to_owned() };
+        let native = match target { "opencode" => r#"{"other":true,"mcp":{"local":{"type":"local","command":["node","server.js"],"enabled":true,"environment":{"LOG_LEVEL":"info"}},"remote":{"type":"remote","url":"https://example.com/mcp","enabled":true,"oauth":false,"headers":{"Authorization":"{env:REMOTE_TOKEN}"}}}}"#.to_owned(), "antigravity" => r#"{"other":true,"mcpServers":{"local":{"command":"node","args":["server.js"],"env":{"LOG_LEVEL":"info"}},"remote":{"serverUrl":"https://example.com/mcp","headers":{"X-Client":"syncplane"}}}}"#.to_owned(), "cursor" => r#"{"other":true,"mcpServers":{"local":{"command":"node","args":["server.js"],"env":{"LOG_LEVEL":"info"}},"remote":{"url":"https://example.com/mcp","headers":{"Authorization":"${env:REMOTE_TOKEN}"}}}}"#.to_owned(), _ => r#"{"other":true,"mcpServers":{"local":{"type":"stdio","command":"node","args":["server.js"],"env":{"LOG_LEVEL":"info"}},"remote":{"type":"http","url":"https://example.com/mcp","headers":{"Authorization":"${REMOTE_TOKEN}"}}}}"#.to_owned() };
         fs::write(&path, &native).unwrap();
         let before = fs::read(&path).unwrap();
         let report =
@@ -117,7 +117,7 @@ fn every_json_adapter_imports_native_stdio_and_remote_without_modifying_source()
             panic!()
         };
         if target == "antigravity" {
-            assert_eq!(headers["X-Client"], ConfigValue::literal("mcpd"));
+            assert_eq!(headers["X-Client"], ConfigValue::literal("syncplane"));
         } else {
             assert_eq!(
                 headers["Authorization"],
@@ -349,7 +349,7 @@ fn open_code_1_18_schema_fixture_preserves_unmanaged_servers_and_generates_enabl
     }
     assert!(rendered.contains(r#""github":"#));
     assert!(rendered.contains(r#""type": "local"#));
-    assert!(rendered.contains("mcpd"));
+    assert!(rendered.contains("syncplane"));
     assert!(rendered.contains("exec"));
     assert!(rendered.contains("github"));
     assert!(rendered.contains(r#""enabled"#));
@@ -382,7 +382,7 @@ fn open_code_v1_ownership_migrates_only_proven_legacy_servers_to_direct_mcp() {
     )
     .unwrap();
     fs::create_dir_all(&paths.state_dir).unwrap();
-    mcpd::state::save(
+    syncplane::state::save(
         &paths.state_dir.join("state.toml"),
         &StateFile {
             version: 1,
@@ -411,7 +411,7 @@ fn open_code_v1_ownership_migrates_only_proven_legacy_servers_to_direct_mcp() {
     assert!(rendered.contains(r#""github":"#));
     assert!(!rendered.contains(r#""servers":"#));
     assert_eq!(
-        mcpd::state::load(&paths.state_dir.join("state.toml"))
+        syncplane::state::load(&paths.state_dir.join("state.toml"))
             .unwrap()
             .targets["opencode"]
             .adapter_version,
@@ -507,7 +507,7 @@ fn open_code_jsonc_wins_when_both_configs_exist_and_json_is_untouched() {
     assert_eq!(adapter.config_path(), jsonc);
     assert_eq!(adapter.server_names().unwrap(), vec!["jsonc-only"]);
     assert_eq!(adapter.warnings().len(), 1);
-    assert!(adapter.warnings()[0].contains("ignored by mcpd"));
+    assert!(adapter.warnings()[0].contains("ignored by syncplane"));
     let canonical = config::load(&paths.config).unwrap();
     let plans = sync::plan_enabled_targets(&canonical, &paths).unwrap();
     assert_eq!(plans[0].path, jsonc);

@@ -1,10 +1,10 @@
-# mcpd Product Requirements Document
+# syncplane Product Requirements Document
 
 **Status:** Implemented v1.0 baseline; forward-looking sections remain non-binding roadmap
-**Project:** `mcpd`  
-**License:** MIT  
-**Primary platform:** Linux  
-**Implementation:** Rust  
+**Project:** `syncplane`
+**License:** MIT
+**Primary platform:** Linux
+**Implementation:** Rust
 **Audience:** Developers who use multiple MCP-capable AI clients and want one reliable, secure configuration layer.
 
 ## Authoritative compatibility references
@@ -19,17 +19,17 @@
 
 ## 1. Executive summary
 
-`mcpd` is a local, open-source MCP configuration control plane for developers who use multiple AI clients such as Claude Code, Cursor, Codex, Antigravity, and OpenCode.
+`syncplane` is a local, open-source MCP configuration control plane for developers who use multiple AI clients such as Claude Code, Cursor, Codex, Antigravity, and OpenCode.
 
 The core problem is simple: MCP server configuration is fragmented across applications, formats, paths, scopes, and authentication models. Adding one server can require repeating the same information in several files and remembering which client expects which schema. Manual edits also create drift, duplicate configuration, accidental secret exposure, and difficult-to-debug failures.
 
-`mcpd` establishes a **single canonical MCP environment** and translates it into the native configuration of every supported client. It is deliberately local-first, has no cloud dependency and no telemetry, and preserves unmanaged configuration in target files.
+`syncplane` establishes a **single canonical MCP environment** and translates it into the native configuration of every supported client. It is deliberately local-first, has no cloud dependency and no telemetry, and preserves unmanaged configuration in target files.
 
 The product promise is:
 
 > **Configure MCP once. Use it everywhere.**
 
-`mcpd` is not an MCP proxy, hosted MCP server, model gateway, agent runtime, marketplace, or cloud dashboard. It is a configuration and synchronization utility with optional health diagnostics.
+`syncplane` is not an MCP proxy, hosted MCP server, model gateway, agent runtime, marketplace, or cloud dashboard. It is a configuration and synchronization utility with optional health diagnostics.
 
 The design is intentionally extensible so that a small v1 can grow into a serious ecosystem project without changing its core data model.
 
@@ -59,11 +59,11 @@ No cloud account is required. The canonical configuration lives on the user's ma
 
 ### 4.2 One source of truth
 
-The canonical `mcpd` configuration is authoritative for entries it owns. Targets are projections of canonical state, not independent sources of truth during normal operation.
+The canonical `syncplane` configuration is authoritative for entries it owns. Targets are projections of canonical state, not independent sources of truth during normal operation.
 
 ### 4.3 Merge-safe by default
 
-`mcpd` must never wipe unrelated configuration it does not own.
+`syncplane` must never wipe unrelated configuration it does not own.
 
 ### 4.4 Secure by default
 
@@ -152,10 +152,10 @@ The product should feel like a native Unix command-line utility, not a configura
 ### First-run experience
 
 ```text
-$ mcpd init
+$ syncplane init
 
-mcpd initialized.
-Canonical config: ~/.config/mcpd/config.toml
+syncplane initialized.
+Canonical config: ~/.config/syncplane/config.toml
 Detected clients:
   ✓ Claude Code
   ✓ Cursor
@@ -164,13 +164,13 @@ Detected clients:
   ✓ OpenCode
 
 No clients were modified.
-Run `mcpd targets enable <name>` to select targets.
+Run `syncplane targets enable <name>` to select targets.
 ```
 
 ### Add a server
 
 ```text
-$ mcpd add github -- npx -y @modelcontextprotocol/server-github
+$ syncplane add github -- npx -y @modelcontextprotocol/server-github
 ```
 
 The command updates canonical state. Unless `--no-sync` is used, enabled targets are synchronized automatically.
@@ -178,13 +178,13 @@ The command updates canonical state. Unless `--no-sync` is used, enabled targets
 ### Add a remote server
 
 ```text
-$ mcpd add sentry --transport http https://mcp.sentry.dev/mcp
+$ syncplane add sentry --transport http https://mcp.sentry.dev/mcp
 ```
 
 ### Store a secret
 
 ```text
-$ mcpd secret set github.token
+$ syncplane secret set github.token
 Enter secret:
 ```
 
@@ -193,7 +193,7 @@ The value is written to the OS keyring, not to `config.toml`.
 ### Sync
 
 ```text
-$ mcpd sync
+$ syncplane sync
 ✓ Claude Code       3 servers synchronized
 ✓ Cursor            3 servers synchronized
 ✓ Codex             3 servers synchronized
@@ -204,7 +204,7 @@ $ mcpd sync
 ### Inspect state
 
 ```text
-$ mcpd status
+$ syncplane status
 
 Canonical
   5 servers
@@ -223,7 +223,7 @@ Targets
 ### Dry run
 
 ```text
-$ mcpd sync --dry-run
+$ syncplane sync --dry-run
 ```
 
 must show the planned changes without writing anything.
@@ -235,13 +235,13 @@ Canonical configuration uses TOML because it is readable, strongly structured, a
 Default location:
 
 ```text
-~/.config/mcpd/config.toml
+~/.config/syncplane/config.toml
 ```
 
 Project-local override:
 
 ```text
-<repository-root>/.mcpd/config.toml
+<repository-root>/.syncplane/config.toml
 ```
 
 The project file is an **overlay**, not another independent source of truth.
@@ -330,13 +330,13 @@ This trust model follows the security direction already visible in clients such 
 Command:
 
 ```text
-mcpd trust
-mcpd trust <path>
-mcpd trust --list
-mcpd trust --revoke <path>
+syncplane trust
+syncplane trust <path>
+syncplane trust --list
+syncplane trust --revoke <path>
 ```
 
-Trust is stored locally in mcpd state and should identify projects by canonical path plus a stable project identity where practical.
+Trust is stored locally in syncplane state and should identify projects by canonical path plus a stable project identity where practical.
 
 Untrusted project overlays are ignored by default and produce a concise warning in commands where relevant.
 
@@ -368,7 +368,7 @@ An adapter owns:
 - config path discovery;
 - native parsing;
 - native serialization;
-- mcpd-owned entry detection;
+- syncplane-owned entry detection;
 - target-specific validation;
 - target-specific capability declaration;
 - target-specific normalization;
@@ -389,7 +389,7 @@ The adapter does **not** own:
 
 ### Claude Code
 
-The adapter must support the current user/global and project-level MCP configuration model exposed by Claude Code, while treating Claude's own CLI and authentication UX as authoritative for flows mcpd does not own. Claude Code currently supports local, project, and user MCP scopes and can also authenticate remote servers through its own UI/command flow.
+The adapter must support the current user/global and project-level MCP configuration model exposed by Claude Code, while treating Claude's own CLI and authentication UX as authoritative for flows syncplane does not own. Claude Code currently supports local, project, and user MCP scopes and can also authenticate remote servers through its own UI/command flow.
 
 The adapter must prefer direct file operations when safe and deterministic, but may expose a CLI-backed operation for client-native operations that cannot be represented safely through file edits.
 
@@ -409,11 +409,11 @@ Antigravity's MCP configuration is JSON-based. Current Google documentation expo
 
 ### OpenCode
 
-OpenCode has an evolving MCP/settings surface. The mcpd adapter targets the underlying OpenCode configuration and preserves unrelated settings; `openchamber` is retained only as a deprecated compatibility alias.
+OpenCode has an evolving MCP/settings surface. The syncplane adapter targets the underlying OpenCode configuration and preserves unrelated settings; `openchamber` is retained only as a deprecated compatibility alias.
 
 ## 12. Custom target definitions
 
-One of the defining capabilities of mcpd is extensibility without recompiling the binary for every new application.
+One of the defining capabilities of syncplane is extensibility without recompiling the binary for every new application.
 
 Built-in targets may be compiled into Rust for richer behavior. User-defined targets may additionally use declarative manifests when the target is simple enough.
 
@@ -440,7 +440,7 @@ Declarative adapters are intentionally limited. If a target requires non-trivial
 Discovery is informational by default.
 
 ```text
-mcpd targets
+syncplane targets
 ```
 
 may report:
@@ -458,22 +458,22 @@ Detection must never imply authorization to modify a target.
 Enablement is explicit:
 
 ```text
-mcpd targets enable cursor
-mcpd targets disable cursor
+syncplane targets enable cursor
+syncplane targets disable cursor
 ```
 
 An optional interactive first-run flow may offer detected targets, but must require confirmation before enabling them.
 
 ## 14. Ownership and merge semantics
 
-mcpd must preserve every unmanaged target entry.
+syncplane must preserve every unmanaged target entry.
 
 Example native target state:
 
 ```json
 {
   "mcpServers": {
-    "github": { "...": "mcpd-managed" },
+    "github": { "...": "syncplane-managed" },
     "my-manual-server": { "...": "user-managed" }
   }
 }
@@ -481,43 +481,43 @@ Example native target state:
 
 After sync:
 
-- `github` may be replaced by canonical mcpd state;
+- `github` may be replaced by canonical syncplane state;
 - `my-manual-server` must remain intact.
 
 ### Managed ownership
 
-mcpd should not inject vendor-risky metadata into MCP server objects unless a target explicitly supports it.
+syncplane should not inject vendor-risky metadata into MCP server objects unless a target explicitly supports it.
 
 Instead, ownership is tracked in:
 
 ```text
-~/.local/state/mcpd/state.toml
+~/.local/state/syncplane/state.toml
 ```
 
 or the platform equivalent.
 
-For each target and managed server, state includes a normalized canonical hash and a rendered target hash. This permits drift detection without contaminating target files with mcpd metadata.
+For each target and managed server, state includes a normalized canonical hash and a rendered target hash. This permits drift detection without contaminating target files with syncplane metadata.
 
 ### Drift behavior
 
 If a managed target entry has been manually changed:
 
-- normal `mcpd sync` treats canonical config as authoritative and repairs the managed entry;
-- `mcpd diff` reports the drift before repair;
-- `mcpd sync --dry-run` previews the repair;
+- normal `syncplane sync` treats canonical config as authoritative and repairs the managed entry;
+- `syncplane diff` reports the drift before repair;
+- `syncplane sync --dry-run` previews the repair;
 - the previous target file is available through the backup system when backups are enabled.
 
 An explicit command can adopt a target entry later:
 
 ```text
-mcpd adopt cursor github
+syncplane adopt cursor github
 ```
 
 Adoption is out of the critical v1 path but should be possible in the architecture.
 
 ## 15. Backups and atomic writes
 
-Before modifying a target file, mcpd should:
+Before modifying a target file, syncplane should:
 
 1. parse and validate the existing target;
 2. create a timestamped backup according to policy;
@@ -525,14 +525,14 @@ Before modifying a target file, mcpd should:
 4. write to a temporary file in the same directory;
 5. flush and sync where appropriate;
 6. atomically rename into place;
-7. update mcpd state only after the target write succeeds.
+7. update syncplane state only after the target write succeeds.
 
 Backups are enabled by default for first releases and can be disabled explicitly.
 
 Default backup location:
 
 ```text
-~/.local/state/mcpd/backups/
+~/.local/state/syncplane/backups/
 ```
 
 Backups must have restrictive permissions when the source file contains or may contain secrets.
@@ -548,10 +548,10 @@ Linux should work with Secret Service and KWallet where the installed keyring ba
 ### API
 
 ```text
-mcpd secret set <name>
-mcpd secret get <name>      # only when explicitly requested; never print by default
-mcpd secret remove <name>
-mcpd secret list
+syncplane secret set <name>
+syncplane secret get <name>      # only when explicitly requested; never print by default
+syncplane secret remove <name>
+syncplane secret list
 ```
 
 `secret get` should require an explicit unsafe flag such as `--reveal` and should warn that the value may be exposed in shell history, terminal scrollback, or process capture.
@@ -582,13 +582,13 @@ transport = "http"
 url = "https://example.com/mcp"
 
 [servers.docs.headers]
-X-Client = "mcpd"
+X-Client = "syncplane"
 
 [servers.docs.secrets]
 Authorization = "docs.authorization"
 ```
 
-mcpd is responsible for configuration translation, not for implementing an MCP server proxy. Remote authentication that requires OAuth browser flows should remain with the target client unless a client adapter has a safe, documented mechanism for configuring it. Claude Code, for example, exposes remote OAuth handling in its own MCP UI.
+syncplane is responsible for configuration translation, not for implementing an MCP server proxy. Remote authentication that requires OAuth browser flows should remain with the target client unless a client adapter has a safe, documented mechanism for configuring it. Claude Code, for example, exposes remote OAuth handling in its own MCP UI.
 
 ## 18. Sync engine
 
@@ -622,7 +622,7 @@ state update
 
 Sync must be target-isolated.
 
-If Cursor succeeds and Codex fails, mcpd must:
+If Cursor succeeds and Codex fails, syncplane must:
 
 - report Cursor success;
 - report Codex failure;
@@ -636,7 +636,7 @@ A failed target must not roll back successful independent targets unless the use
 Command:
 
 ```text
-mcpd watch
+syncplane watch
 ```
 
 Watch mode observes the canonical configuration and project overlay files.
@@ -665,14 +665,14 @@ Only one sync transaction may run at a time. A lock or in-process coordination p
 
 ## 20. systemd integration
 
-Linux users may run mcpd continuously as a user service.
+Linux users may run syncplane continuously as a user service.
 
 Commands:
 
 ```text
-mcpd systemd generate
-mcpd systemd install
-mcpd systemd uninstall
+syncplane systemd generate
+syncplane systemd install
+syncplane systemd uninstall
 ```
 
 Generated service should run as the user's systemd user unit and restart on failure. It must not require root privileges.
@@ -684,23 +684,23 @@ The project must not assume a login shell environment. systemd services should s
 Initial command tree:
 
 ```text
-mcpd init
-mcpd add
-mcpd remove
-mcpd list
-mcpd get
-mcpd sync
-mcpd watch
-mcpd status
-mcpd diff
-mcpd doctor
-mcpd import
-mcpd targets
-mcpd secret
-mcpd trust
-mcpd systemd
-mcpd version
-mcpd completions
+syncplane init
+syncplane add
+syncplane remove
+syncplane list
+syncplane get
+syncplane sync
+syncplane watch
+syncplane status
+syncplane diff
+syncplane doctor
+syncplane import
+syncplane targets
+syncplane secret
+syncplane trust
+syncplane systemd
+syncplane version
+syncplane completions
 ```
 
 Subcommands should use conventional Rust CLI conventions and provide consistent `--json`, `--quiet`, `--verbose`, and `--dry-run` behavior where meaningful.
@@ -712,10 +712,10 @@ Import is explicit, not automatic.
 Examples:
 
 ```text
-mcpd import claude
-mcpd import cursor
-mcpd import codex
-mcpd import --all
+syncplane import claude
+syncplane import cursor
+syncplane import codex
+syncplane import --all
 ```
 
 Import should never silently overwrite canonical entries.
@@ -724,7 +724,7 @@ If two sources disagree, import must produce a conflict report and require the u
 
 ## 23. Diff and status
 
-### `mcpd diff`
+### `syncplane diff`
 
 The command compares canonical resolved state against target-rendered state.
 
@@ -739,7 +739,7 @@ Codex
 
 Secret values are never shown.
 
-### `mcpd status`
+### `syncplane status`
 
 Status should answer three questions immediately:
 
@@ -749,7 +749,7 @@ Status should answer three questions immediately:
 
 ## 24. Doctor
 
-`mcpd doctor` performs static checks only by default:
+`syncplane doctor` performs static checks only by default:
 
 - canonical config validity;
 - project trust state;
@@ -763,7 +763,7 @@ Status should answer three questions immediately:
 - adapter compatibility;
 - stale locks.
 
-A future `mcpd doctor --deep` may launch servers or perform remote MCP initialization.
+A future `syncplane doctor --deep` may launch servers or perform remote MCP initialization.
 
 ## 25. Health checks
 
@@ -772,8 +772,8 @@ Health is intentionally separate from sync.
 Future-capable commands:
 
 ```text
-mcpd test <server>
-mcpd test --all
+syncplane test <server>
+syncplane test --all
 ```
 
 v1 should at minimum validate whether a configured stdio command is resolvable and whether an HTTP endpoint is syntactically valid and reachable when the user explicitly asks for a network check.
@@ -803,7 +803,7 @@ Security is a first-class product feature, not a README warning.
 - canonicalize and validate paths;
 - refuse unsafe symlink targets for config files by default;
 - atomic writes;
-- restrictive permissions on mcpd state and secret-related files;
+- restrictive permissions on syncplane state and secret-related files;
 - secrets through keyring references;
 - no secrets in logs;
 - project trust model;
@@ -812,7 +812,7 @@ Security is a first-class product feature, not a README warning.
 - no automatic download or install of MCP packages in v1;
 - adapter-level validation and fixture tests.
 
-The MCP specification itself emphasizes secure handling of Streamable HTTP, including Origin validation and appropriate authentication on server implementations. mcpd should therefore avoid adding a false sense of security around remote MCPs; it is a configuration manager, not a security boundary for the remote server.
+The MCP specification itself emphasizes secure handling of Streamable HTTP, including Origin validation and appropriate authentication on server implementations. syncplane should therefore avoid adding a false sense of security around remote MCPs; it is a configuration manager, not a security boundary for the remote server.
 
 ## 27. Cross-platform strategy
 
@@ -853,7 +853,7 @@ Avoid adding dependencies purely because they are fashionable. Every dependency 
 ## 29. Proposed repository structure
 
 ```text
-mcpd/
+syncplane/
 ├── src/
 │   ├── main.rs
 │   ├── cli/
@@ -944,7 +944,7 @@ Explicitly test:
 
 ## 31. Quality requirements
 
-mcpd should be held to a higher bar than a normal utility because it edits configuration other programs depend on.
+syncplane should be held to a higher bar than a normal utility because it edits configuration other programs depend on.
 
 The project should target:
 
@@ -963,7 +963,7 @@ The project should target:
 Initial installer:
 
 ```text
-curl -fsSL https://get.mcpd.dev/install.sh | sh
+curl -fsSL https://get.syncplane.dev/install.sh | sh
 ```
 
 The installer should:
@@ -971,7 +971,7 @@ The installer should:
 - detect OS/architecture;
 - download a versioned release artifact;
 - verify checksum/signature when available;
-- install to `~/.local/bin/mcpd` by default;
+- install to `~/.local/bin/syncplane` by default;
 - avoid requiring root;
 - refuse to overwrite a binary it cannot safely verify.
 
@@ -979,7 +979,7 @@ The installer URL is a planned project endpoint, not a dependency of the core bi
 
 ## 33. Update strategy
 
-`mcpd update` should be safe, explicit, and opt-in.
+`syncplane update` should be safe, explicit, and opt-in.
 
 It should never silently replace a running binary.
 
@@ -1017,7 +1017,7 @@ Exact numeric semantics should be stabilized before 1.0.
 
 ## 35. Observability and privacy
 
-mcpd has:
+syncplane has:
 
 ```text
 NO TELEMETRY
@@ -1058,7 +1058,7 @@ Future schema migrations must be explicit and reversible where practical.
 Command:
 
 ```text
-mcpd migrate
+syncplane migrate
 ```
 
 Automatic migration may be offered only when a backup is made first and the migration can be proven safe.
@@ -1069,16 +1069,16 @@ Target adapter version detection is separate from canonical schema versioning.
 
 The project is successful when a user can:
 
-1. install mcpd without root;
+1. install syncplane without root;
 2. add an MCP server once;
 3. have it appear correctly in every enabled supported client;
 4. add a new client later and synchronize without retyping servers;
 5. keep secrets out of configuration files;
 6. understand any drift or failure immediately;
 7. recover from a failed configuration write without data loss;
-8. add a custom declarative target without modifying mcpd core where possible.
+8. add a custom declarative target without modifying syncplane core where possible.
 
-Qualitative success is more important than raw installation counts: users should trust mcpd enough to let it manage their configuration automatically.
+Qualitative success is more important than raw installation counts: users should trust syncplane enough to let it manage their configuration automatically.
 
 ## 39. MVP acceptance criteria
 
@@ -1086,8 +1086,8 @@ The first public release is acceptable when all of the following are true:
 
 ### Installation
 
-- [x] A fresh Linux user can install mcpd without root.
-- [x] `mcpd --version` works.
+- [x] A fresh Linux user can install syncplane without root.
+- [x] `syncplane --version` works.
 - [x] Shell completion can be generated.
 
 ### Config
@@ -1115,8 +1115,8 @@ The first public release is acceptable when all of the following are true:
 
 ### Sync
 
-- [x] `mcpd sync` is idempotent.
-- [x] `mcpd sync --dry-run` performs no writes.
+- [x] `syncplane sync` is idempotent.
+- [x] `syncplane sync --dry-run` performs no writes.
 - [x] Failed target sync does not corrupt other targets.
 - [x] Atomic writes are used.
 - [x] Backups retain the previous target state for manual restore.
@@ -1179,7 +1179,7 @@ The project should resist becoming a cloud product unless users demonstrate a co
 The architecture should make the following possible without replacing the core model:
 
 ```text
-                    mcpd core
+                    syncplane core
                        │
         ┌──────────────┼───────────────┐
         ↓              ↓               ↓
@@ -1201,7 +1201,7 @@ The architecture should make the following possible without replacing the core m
                  targets
 ```
 
-The key design choice is to keep **MCP semantics, target semantics, filesystem mutation, secrets, and presentation as separate layers**. That separation is the main defense against mcpd becoming an unmaintainable pile of client-specific conditionals.
+The key design choice is to keep **MCP semantics, target semantics, filesystem mutation, secrets, and presentation as separate layers**. That separation is the main defense against syncplane becoming an unmaintainable pile of client-specific conditionals.
 
 ## 42. Reference sources
 
@@ -1217,7 +1217,7 @@ The design uses current public MCP/client behavior as of August 2026. Client API
 
 ## 43. Final product definition
 
-`mcpd` is a **local MCP configuration control plane**.
+`syncplane` is a **local MCP configuration control plane**.
 
 It owns one canonical configuration, stores secrets safely, translates configuration into multiple native client formats, detects installed clients, preserves unmanaged state, reports drift clearly, and optionally keeps enabled targets synchronized.
 

@@ -1,0 +1,16 @@
+---
+import DocsLayout from '../../components/DocsLayout.astro';
+---
+<DocsLayout title="Safety model" description="How Syncplane protects unmanaged target configuration, secrets, project trust, and recovery boundaries.">
+  <p class="lead">Syncplane is configuration infrastructure. Its defaults are designed to make an unsafe mutation difficult to request and obvious to review.</p>
+  <h2>Unmanaged entries survive</h2>
+  <p>A target is never managed merely because it was detected. A same-name server that is not owned must be imported or explicitly adopted before Syncplane can replace it.</p>
+  <h2>Dry runs stay pure</h2>
+  <p><code>syncplane sync --dry-run</code> calculates a plan without modifying canonical configuration, target files, keyring state, backups, ownership state, or locks.</p>
+  <h2>Secret values stay out of configuration</h2>
+  <p>Use environment or keyring references in canonical config. Syncplane resolves a keyring-backed stdio secret immediately before running the configured child process through <code>syncplane exec</code>; it never serializes the raw value into canonical config, state, logs, or ordinary output.</p>
+  <h2>Project overlays require trust</h2>
+  <p>Project-local configuration can affect commands and environment. An overlay is ignored until its canonical project path is explicitly trusted. Untrusted overlays cannot resolve global secrets or influence global configuration.</p>
+  <h2>Recovery is intentional</h2>
+  <p>If canonical config disappears while ownership remains, Syncplane fails closed rather than treating remembered ownership as a request to remove servers. Review <code>syncplane diff --all</code> before any intentional bulk removal.</p>
+</DocsLayout>

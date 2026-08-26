@@ -1,0 +1,22 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+---
+<Base title="Install Syncplane" description="Install the checksum-verified Syncplane Linux x86_64 binary.">
+  <Nav />
+  <main id="main" class="install-page">
+    <p class="plate-label">Syncplane 1.0.0 · Linux x86_64</p>
+    <h1>Install the<br /><em>registered release.</em></h1>
+    <p class="lead">The installer downloads the official GitHub Release asset, verifies its SHA-256 checksum, and installs only the <code>syncplane</code> executable.</p>
+    <div class="install-command"><code>curl -fsSL https://syncplane.midhunpm.in/install.sh | sh</code><button type="button" data-copy="curl -fsSL https://syncplane.midhunpm.in/install.sh | sh">Copy</button></div>
+    <div class="install-notes">
+      <section><h2>Inspect first</h2><p><a href="/install.sh">Read the installer</a> before executing it, or download the release archive and <code>checksums.txt</code> directly from GitHub.</p></section>
+      <section><h2>Choose a version</h2><pre><code>SYNCPLANE_VERSION=v1.0.0 curl -fsSL https://syncplane.midhunpm.in/install.sh | sh</code></pre></section>
+      <section><h2>Choose a directory</h2><pre><code>SYNCPLANE_INSTALL_DIR="$HOME/.local/bin" curl -fsSL https://syncplane.midhunpm.in/install.sh | sh</code></pre></section>
+      <section><h2>Build from source</h2><pre><code>cargo install syncplane</code></pre><p>Available after the matching version has been published to crates.io.</p></section>
+    </div>
+  </main>
+  <Footer />
+  <script is:inline>document.querySelector('[data-copy]')?.addEventListener('click', (event) => navigator.clipboard.writeText(event.currentTarget.dataset.copy));</script>
+</Base>

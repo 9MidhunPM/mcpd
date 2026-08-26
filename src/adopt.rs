@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     model::{CanonicalConfig, Server},
     state::{self, TargetState},
     sync,
@@ -108,7 +108,7 @@ pub fn adopt(
     // Bulk adoption is intentionally all-or-nothing: it must never leave a
     // surprising subset of the canonical servers newly owned.
     if !skipped.is_empty() && (selection.is_none() || adopted.is_empty()) {
-        return Err(McpdError::Conflict {
+        return Err(SyncplaneError::Conflict {
             message: format!("cannot adopt `{}`", skipped[0].name),
             hint: skipped[0].reason.clone(),
         });

@@ -14,6 +14,6 @@ Ownership is recorded under the local state directory and never injected into cl
 
 ## Consequences
 
-- A lost state file does not authorize `mcpd` to infer or reclaim ownership.
+- A lost state file does not authorize `syncplane` to infer or reclaim ownership.
 - Imports and adoption are explicit operations; discovery alone never grants ownership.
 - Adding another client should add an adapter, not target conditionals to generic sync code.

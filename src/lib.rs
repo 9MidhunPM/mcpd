@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use directories::BaseDirs;
 
-use crate::diagnostics::{McpdError, Result};
+use crate::diagnostics::{Result, SyncplaneError};
 
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -31,25 +31,27 @@ pub struct Paths {
 
 impl Paths {
     pub fn discover() -> Result<Self> {
-        let base = BaseDirs::new().ok_or_else(|| McpdError::Operational {
+        let base = BaseDirs::new().ok_or_else(|| SyncplaneError::Operational {
             message: "could not determine the user home directory".into(),
-            hint: "set HOME, or set MCPD_CONFIG, MCPD_STATE_DIR, and MCPD_CODEX_CONFIG".into(),
+            hint:
+                "set HOME, or set SYNCPLANE_CONFIG, SYNCPLANE_STATE_DIR, and SYNCPLANE_CODEX_CONFIG"
+                    .into(),
         })?;
-        let home = std::env::var_os("MCPD_HOME")
+        let home = std::env::var_os("SYNCPLANE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| base.home_dir().to_path_buf());
         Ok(Self {
-            config: std::env::var_os("MCPD_CONFIG")
+            config: std::env::var_os("SYNCPLANE_CONFIG")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| base.config_dir().join("mcpd/config.toml")),
-            state_dir: std::env::var_os("MCPD_STATE_DIR")
+                .unwrap_or_else(|| base.config_dir().join("syncplane/config.toml")),
+            state_dir: std::env::var_os("SYNCPLANE_STATE_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| {
                     base.state_dir()
                         .unwrap_or_else(|| base.data_local_dir())
-                        .join("mcpd")
+                        .join("syncplane")
                 }),
-            codex_config: std::env::var_os("MCPD_CODEX_CONFIG")
+            codex_config: std::env::var_os("SYNCPLANE_CODEX_CONFIG")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| home.join(".codex/config.toml")),
             home,
@@ -58,14 +60,14 @@ impl Paths {
 
     pub fn target_config(&self, target: &str) -> Option<PathBuf> {
         if matches!(target, "opencode" | "openchamber") {
-            if let Some(path) = std::env::var_os("MCPD_OPENCODE_CONFIG") {
+            if let Some(path) = std::env::var_os("SYNCPLANE_OPENCODE_CONFIG") {
                 return Some(PathBuf::from(path));
             }
-            if let Some(path) = std::env::var_os("MCPD_OPENCHAMBER_CONFIG") {
+            if let Some(path) = std::env::var_os("SYNCPLANE_OPENCHAMBER_CONFIG") {
                 return Some(PathBuf::from(path));
             }
         }
-        let override_name = format!("MCPD_{}_CONFIG", target.to_ascii_uppercase());
+        let override_name = format!("SYNCPLANE_{}_CONFIG", target.to_ascii_uppercase());
         if let Some(path) = std::env::var_os(override_name) {
             return Some(PathBuf::from(path));
         }

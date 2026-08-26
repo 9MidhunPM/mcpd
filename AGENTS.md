@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository contains `mcpd`, a production-quality open-source Rust CLI that manages one canonical MCP configuration and safely projects it into multiple MCP-capable AI clients.
+This repository contains `syncplane`, a production-quality open-source Rust CLI that manages one canonical MCP configuration and safely projects it into multiple MCP-capable AI clients.
 
 The project is intentionally infrastructure-like. Changes that modify user configuration, secrets, target adapters, synchronization semantics, or trust behavior require more rigor than ordinary application changes.
 
@@ -10,7 +10,7 @@ The project is intentionally infrastructure-like. Changes that modify user confi
 
 > Configure MCP once. Use it everywhere.
 
-Keep `mcpd` focused on MCP configuration, synchronization, discovery, secrets, diagnostics, and safe target integration.
+Keep `syncplane` focused on MCP configuration, synchronization, discovery, secrets, diagnostics, and safe target integration.
 
 Do not turn it into an MCP proxy, model gateway, agent runtime, server marketplace, hosted service, or general AI configuration manager.
 
@@ -61,19 +61,19 @@ Canonical MCP state is the source of truth.
 Default config:
 
 ```text
-~/.config/mcpd/config.toml
+~/.config/syncplane/config.toml
 ```
 
 Project overlay:
 
 ```text
-<repo-root>/.mcpd/config.toml
+<repo-root>/.syncplane/config.toml
 ```
 
 Local state:
 
 ```text
-~/.local/state/mcpd/
+~/.local/state/syncplane/
 ```
 
 Secrets must not be stored in canonical config files. Use keyring references.
@@ -166,21 +166,21 @@ These invariants are mandatory:
 Running:
 
 ```text
-mcpd sync
-mcpd sync
-mcpd sync
+syncplane sync
+syncplane sync
+syncplane sync
 ```
 
 without external changes must produce no semantic changes after the first successful sync.
 
 ### 2. Preserve unmanaged entries
 
-Never delete or rewrite target configuration outside the mcpd-owned scope unless the user explicitly requests it.
+Never delete or rewrite target configuration outside the syncplane-owned scope unless the user explicitly requests it.
 
 ### 3. Dry-run purity
 
 ```text
-mcpd sync --dry-run
+syncplane sync --dry-run
 ```
 
 must not modify target files, canonical config, keyring state, or ownership state.
@@ -215,7 +215,7 @@ For configuration mutation:
 6. Write a temporary file in the same directory.
 7. Flush/sync where appropriate.
 8. Atomically rename.
-9. Update mcpd state.
+9. Update syncplane state.
 
 Do not use ad-hoc search-and-replace on JSON/TOML when structured parsing is available.
 
@@ -225,7 +225,7 @@ Preserve formatting/comments when the target format/library makes that safely po
 
 Before modifying an existing target, create a backup according to policy.
 
-Backups belong under mcpd local state, not in the repository and not in the canonical config directory.
+Backups belong under syncplane local state, not in the repository and not in the canonical config directory.
 
 Never include secret values in backup metadata or logs.
 
@@ -301,7 +301,7 @@ Do not follow an unexpected symlink to a config file outside the intended target
 
 ## Watch mode
 
-`mcpd watch` should observe canonical config and trusted project overlays.
+`syncplane watch` should observe canonical config and trusted project overlays.
 
 Use debouncing to avoid editor-write storms.
 
@@ -313,7 +313,7 @@ Only one sync transaction may run at a time.
 
 ## State and drift
 
-mcpd should track managed ownership and normalized hashes in local state rather than injecting proprietary metadata into target configuration files.
+syncplane should track managed ownership and normalized hashes in local state rather than injecting proprietary metadata into target configuration files.
 
 A useful state record includes:
 
@@ -336,23 +336,23 @@ Commands should be consistent and composable.
 Initial command surface:
 
 ```text
-mcpd init
-mcpd add
-mcpd remove
-mcpd list
-mcpd get
-mcpd sync
-mcpd watch
-mcpd status
-mcpd diff
-mcpd doctor
-mcpd import
-mcpd targets
-mcpd secret
-mcpd trust
-mcpd systemd
-mcpd version
-mcpd completions
+syncplane init
+syncplane add
+syncplane remove
+syncplane list
+syncplane get
+syncplane sync
+syncplane watch
+syncplane status
+syncplane diff
+syncplane doctor
+syncplane import
+syncplane targets
+syncplane secret
+syncplane trust
+syncplane systemd
+syncplane version
+syncplane completions
 ```
 
 Human output is the default.
@@ -389,7 +389,7 @@ Good:
 ```text
 Codex sync failed: ~/.codex/config.toml is valid TOML but contains an unsupported MCP server field `foo` for the detected Codex version.
 
-Hint: run `mcpd doctor codex` to inspect adapter compatibility.
+Hint: run `syncplane doctor codex` to inspect adapter compatibility.
 ```
 
 Avoid enormous backtraces in normal CLI mode.
@@ -443,8 +443,8 @@ For each built-in adapter maintain fixtures for at least:
 
 ```text
 empty config
-single mcpd server
-multiple mcpd servers
+single syncplane server
+multiple syncplane servers
 unmanaged servers
 mixed managed/unmanaged
 malformed config
@@ -516,7 +516,7 @@ CI should run these checks before a merge.
 
 ## Performance
 
-mcpd is primarily a configuration tool, not a high-throughput service.
+syncplane is primarily a configuration tool, not a high-throughput service.
 
 Optimize for:
 
@@ -680,7 +680,7 @@ If the feature does not clearly help the configuration control-plane problem, de
 
 ## Product north star for contributors
 
-A user should be able to install mcpd, define an MCP server once, enable five clients, and forget that those clients use five different configuration systems.
+A user should be able to install syncplane, define an MCP server once, enable five clients, and forget that those clients use five different configuration systems.
 
 The ideal result is invisible infrastructure:
 

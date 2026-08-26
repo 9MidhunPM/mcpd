@@ -662,33 +662,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mcpd"
-version = "1.0.0"
-dependencies = [
- "assert_cmd",
- "clap",
- "clap_complete",
- "directories",
- "fs2",
- "keyring",
- "notify",
- "predicates",
- "proptest",
- "rpassword",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "toml",
- "toml_edit",
- "tracing",
- "tracing-subscriber",
- "url",
- "zeroize",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1175,6 +1148,33 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "syncplane"
+version = "1.0.0"
+dependencies = [
+ "assert_cmd",
+ "clap",
+ "clap_complete",
+ "directories",
+ "fs2",
+ "keyring",
+ "notify",
+ "predicates",
+ "proptest",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "toml_edit",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "zeroize",
 ]
 
 [[package]]

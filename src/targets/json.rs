@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     model::{CanonicalConfig, ConfigValue, Server},
     state::{ManagedServer, TargetState},
     sync::fs::{ensure_safe_target_path, hash_bytes},
@@ -88,17 +88,18 @@ impl JsonAdapter {
             },
             "claude-project" | "claude-local" => {
                 let project = crate::resolve::current_project(paths)?.ok_or_else(|| {
-                    McpdError::TargetUnavailable {
+                    SyncplaneError::TargetUnavailable {
                         target: id.into(),
                         message: "no current project could be discovered".into(),
-                        hint: "run inside a repository or set MCPD_PROJECT_ROOT".into(),
+                        hint: "run inside a repository or set SYNCPLANE_PROJECT_ROOT".into(),
                     }
                 })?;
                 if !project.trusted {
-                    return Err(McpdError::Security {
+                    return Err(SyncplaneError::Security {
                         path: project.root,
                         message: format!("{id} requires an explicitly trusted project"),
-                        hint: "run `mcpd trust` in the project before enabling this scope".into(),
+                        hint: "run `syncplane trust` in the project before enabling this scope"
+                            .into(),
                     });
                 }
                 let local = id == "claude-local";
@@ -126,7 +127,7 @@ impl JsonAdapter {
                 }
             }
             _ => {
-                return Err(McpdError::TargetUnavailable {
+                return Err(SyncplaneError::TargetUnavailable {
                     target: id.into(),
                     message: "unknown JSON target".into(),
                     hint: "use a built-in target ID".into(),
@@ -141,10 +142,10 @@ impl JsonAdapter {
             "opencode" => Some(open_code_path(paths)?),
             _ => paths.target_config(id).map(|path| (path, Vec::new())),
         }
-        .ok_or_else(|| McpdError::TargetUnavailable {
+        .ok_or_else(|| SyncplaneError::TargetUnavailable {
             target: id.into(),
             message: "could not determine a target configuration path".into(),
-            hint: "set the target-specific MCPD_*_CONFIG override".into(),
+            hint: "set the target-specific SYNCPLANE_*_CONFIG override".into(),
         })?;
         let config_root = paths
             .config
@@ -154,10 +155,10 @@ impl JsonAdapter {
         let allowed_root = if id == "claude-project" {
             crate::resolve::current_project(paths)?
                 .map(|project| project.root)
-                .ok_or_else(|| McpdError::TargetUnavailable {
+                .ok_or_else(|| SyncplaneError::TargetUnavailable {
                     target: id.into(),
                     message: "no current project could be discovered".into(),
-                    hint: "run inside a repository or set MCPD_PROJECT_ROOT".into(),
+                    hint: "run inside a repository or set SYNCPLANE_PROJECT_ROOT".into(),
                 })?
         } else if path.starts_with(&paths.home) {
             paths.home.clone()
@@ -190,7 +191,7 @@ impl JsonAdapter {
                 Ok((None, json!({})))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Err(McpdError::TargetUnavailable {
+                Err(SyncplaneError::TargetUnavailable {
                     target: self.id().into(),
                     message: format!("configuration {} does not exist", self.path.display()),
                     hint: format!(
@@ -199,12 +200,12 @@ impl JsonAdapter {
                     ),
                 })
             }
-            Err(source) => Err(McpdError::io(&self.path, source)),
+            Err(source) => Err(SyncplaneError::io(&self.path, source)),
         }
     }
 
-    fn bad(&self, message: impl Into<String>) -> McpdError {
-        McpdError::InvalidInput {
+    fn bad(&self, message: impl Into<String>) -> SyncplaneError {
+        SyncplaneError::InvalidInput {
             message: format!(
                 "{}: {}",
                 crate::targets::display_name(self.id()),
@@ -244,9 +245,9 @@ impl JsonAdapter {
         Ok(current)
     }
 
-    /// mcpd 1.0.0 wrote the unshipped `mcp.servers` proposal. OpenCode 1.x
+    /// syncplane 1.0.0 wrote the unshipped `mcp.servers` proposal. OpenCode 1.x
     /// treats that as a server named `servers`, so only migrate it when the
-    /// previous ownership record proves every nested entry belongs to mcpd.
+    /// previous ownership record proves every nested entry belongs to syncplane.
     fn take_legacy_open_code_servers(
         &self,
         doc: &mut Value,
@@ -272,14 +273,14 @@ impl JsonAdapter {
             previous.filter(|state| state.config_path == self.path && state.adapter_version == 1);
         let Some(previous) = previous else {
             return Err(self.bad(
-                "found legacy `mcp.servers` entries without mcpd ownership; refusing to rewrite them",
+                "found legacy `mcp.servers` entries without syncplane ownership; refusing to rewrite them",
             ));
         };
         let legacy_names = legacy.keys().cloned().collect::<BTreeSet<_>>();
         let owned_names = previous.managed.keys().cloned().collect::<BTreeSet<_>>();
         if legacy_names != owned_names {
             return Err(self.bad(
-                "legacy `mcp.servers` mixes mcpd-managed and unmanaged entries; refusing to remove it",
+                "legacy `mcp.servers` mixes syncplane-managed and unmanaged entries; refusing to remove it",
             ));
         }
         doc.get_mut("mcp")
@@ -306,11 +307,11 @@ impl JsonAdapter {
                         }));
                 if requires_wrapper {
                     return Ok(if self.profile.open_code {
-                        json!({"type":"local", "command":["mcpd", "exec", name], "enabled":true})
+                        json!({"type":"local", "command":["syncplane", "exec", name], "enabled":true})
                     } else if self.profile.explicit_type {
-                        json!({"type":"stdio", "command":"mcpd", "args":["exec", name]})
+                        json!({"type":"stdio", "command":"syncplane", "args":["exec", name]})
                     } else {
-                        json!({"command":"mcpd", "args":["exec", name]})
+                        json!({"command":"syncplane", "args":["exec", name]})
                     });
                 }
                 let mut object = Map::new();
@@ -334,20 +335,20 @@ impl JsonAdapter {
                 let mut native_env = Map::new();
                 for (field, value) in env {
                     let ConfigValue::Literal(value) = value else {
-                        return Err(McpdError::Operational {
+                        return Err(SyncplaneError::Operational {
                             message: format!(
                                 "secret reference for `{name}` escaped runtime wrapping"
                             ),
-                            hint: "report this as an mcpd bug".into(),
+                            hint: "report this as a Syncplane bug".into(),
                         });
                     };
                     let rendered =
                         if let Some(source) = env_reference(value)? {
-                            self.profile.env_reference.ok_or_else(|| McpdError::Operational {
+                            self.profile.env_reference.ok_or_else(|| SyncplaneError::Operational {
                             message: format!(
                                 "environment reference for `{name}` escaped runtime wrapping"
                             ),
-                            hint: "report this as an mcpd bug".into(),
+                            hint: "report this as a Syncplane bug".into(),
                         })?(source)
                         } else {
                             value.clone()
@@ -373,13 +374,13 @@ impl JsonAdapter {
                     .map(String::as_str)
                     .or_else(|| headers.values().find_map(ConfigValue::secret_name))
                 {
-                    return Err(McpdError::InvalidInput {
+                    return Err(SyncplaneError::InvalidInput {
                         message: format!(
                             "{} cannot safely inject keyring secret `{secret}` into HTTP server `{name}`",
                             crate::targets::display_name(self.id())
                         ),
                         hint:
-                            "use a native environment reference; mcpd does not proxy HTTP traffic"
+                            "use a native environment reference; syncplane does not proxy HTTP traffic"
                                 .into(),
                     });
                 }
@@ -398,13 +399,13 @@ impl JsonAdapter {
                 let mut native_headers = Map::new();
                 for (header, value) in headers {
                     let ConfigValue::Literal(value) = value else {
-                        return Err(McpdError::Operational {
+                        return Err(SyncplaneError::Operational {
                             message: format!("secret HTTP header for `{name}` escaped validation"),
-                            hint: "report this as an mcpd bug".into(),
+                            hint: "report this as a Syncplane bug".into(),
                         });
                     };
                     let rendered = if let Some(env) = env_reference(value)? {
-                        self.profile.env_reference.ok_or_else(|| McpdError::InvalidInput { message: format!("{} cannot safely represent environment-backed HTTP header `{header}` for `{name}`", crate::targets::display_name(self.id())), hint: "keep this server disabled for the target or use client-native authentication".into() })?(env)
+                        self.profile.env_reference.ok_or_else(|| SyncplaneError::InvalidInput { message: format!("{} cannot safely represent environment-backed HTTP header `{header}` for `{name}`", crate::targets::display_name(self.id())), hint: "keep this server disabled for the target or use client-native authentication".into() })?(env)
                     } else {
                         value.clone()
                     };
@@ -586,14 +587,14 @@ impl JsonAdapter {
 }
 
 fn antigravity_path(paths: &Paths) -> Result<PathBuf> {
-    if std::env::var_os("MCPD_ANTIGRAVITY_CONFIG").is_some() {
-        return paths
-            .target_config("antigravity")
-            .ok_or_else(|| McpdError::TargetUnavailable {
+    if std::env::var_os("SYNCPLANE_ANTIGRAVITY_CONFIG").is_some() {
+        return paths.target_config("antigravity").ok_or_else(|| {
+            SyncplaneError::TargetUnavailable {
                 target: "antigravity".into(),
-                message: "MCPD_ANTIGRAVITY_CONFIG did not resolve to a path".into(),
+                message: "SYNCPLANE_ANTIGRAVITY_CONFIG did not resolve to a path".into(),
                 hint: "set it to an absolute configuration file path".into(),
-            });
+            }
+        });
     }
     let candidates = [
         paths.home.join(".gemini/config/mcp_config.json"),
@@ -608,7 +609,7 @@ fn antigravity_path(paths: &Paths) -> Result<PathBuf> {
     match existing.as_slice() {
         [] => Ok(candidates[0].clone()),
         [path] => Ok(path.clone()),
-        _ => Err(McpdError::Conflict {
+        _ => Err(SyncplaneError::Conflict {
             message: format!(
                 "multiple Antigravity MCP configuration paths exist: {}",
                 existing
@@ -617,37 +618,39 @@ fn antigravity_path(paths: &Paths) -> Result<PathBuf> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            hint: "set MCPD_ANTIGRAVITY_CONFIG to the active client configuration explicitly"
+            hint: "set SYNCPLANE_ANTIGRAVITY_CONFIG to the active client configuration explicitly"
                 .into(),
         }),
     }
 }
 
 fn open_code_path(paths: &Paths) -> Result<(PathBuf, Vec<String>)> {
-    let path = paths
-        .target_config("opencode")
-        .ok_or_else(|| McpdError::TargetUnavailable {
-            target: "opencode".into(),
-            message: "could not determine the OpenCode configuration path".into(),
-            hint: "set MCPD_OPENCODE_CONFIG to an absolute configuration file path".into(),
-        })?;
-    if std::env::var_os("MCPD_OPENCODE_CONFIG").is_some()
-        || std::env::var_os("MCPD_OPENCHAMBER_CONFIG").is_some()
+    let path =
+        paths
+            .target_config("opencode")
+            .ok_or_else(|| SyncplaneError::TargetUnavailable {
+                target: "opencode".into(),
+                message: "could not determine the OpenCode configuration path".into(),
+                hint: "set SYNCPLANE_OPENCODE_CONFIG to an absolute configuration file path".into(),
+            })?;
+    if std::env::var_os("SYNCPLANE_OPENCODE_CONFIG").is_some()
+        || std::env::var_os("SYNCPLANE_OPENCHAMBER_CONFIG").is_some()
     {
         return Ok((path, Vec::new()));
     }
-    let directory = path.parent().ok_or_else(|| McpdError::InvalidInput {
+    let directory = path.parent().ok_or_else(|| SyncplaneError::InvalidInput {
         message: format!(
             "OpenCode configuration path {} has no parent",
             path.display()
         ),
-        hint: "set MCPD_OPENCODE_CONFIG to a file beneath a safe configuration directory".into(),
+        hint: "set SYNCPLANE_OPENCODE_CONFIG to a file beneath a safe configuration directory"
+            .into(),
     })?;
     let jsonc = directory.join("opencode.jsonc");
     let json = directory.join("opencode.json");
     let warnings = if jsonc.exists() && json.exists() {
         vec![format!(
-            "OpenCode config {} is active; {} also exists and is ignored by mcpd",
+            "OpenCode config {} is active; {} also exists and is ignored by syncplane",
             jsonc.display(),
             json.display()
         )]
@@ -741,7 +744,7 @@ impl TargetAdapter for JsonAdapter {
         mode: ImportMode,
     ) -> Result<TargetImport> {
         let (snapshot, doc) = self.read(false)?;
-        let snapshot = snapshot.ok_or_else(|| McpdError::TargetUnavailable {
+        let snapshot = snapshot.ok_or_else(|| SyncplaneError::TargetUnavailable {
             target: self.id().into(),
             message: format!("configuration {} does not exist", self.path.display()),
             hint: "configure at least one native MCP server before importing".into(),
@@ -785,7 +788,7 @@ impl TargetAdapter for JsonAdapter {
                             .get(&write.name)
                             .is_some_and(|value| value != write.value.expose())
                     }) {
-                        let error = McpdError::Conflict {
+                        let error = SyncplaneError::Conflict {
                             message: format!(
                                 "multiple imported values were mapped to secret `{}`",
                                 conflict.name
@@ -871,13 +874,13 @@ impl TargetAdapter for JsonAdapter {
             let rendered_hash = hash_json(&rendered)?;
             match current.get(&name) {
                 Some(_) if !owned.contains_key(&name) => {
-                    return Err(McpdError::Conflict {
+                    return Err(SyncplaneError::Conflict {
                         message: format!(
                             "{} already has unmanaged MCP server `{name}`",
                             crate::targets::display_name(self.id())
                         ),
                         hint: format!(
-                            "run `mcpd adopt {} {name}` when it matches canonical state, or use `mcpd adopt {} {name} --replace --yes`",
+                            "run `syncplane adopt {} {name}` when it matches canonical state, or use `syncplane adopt {} {name} --replace --yes`",
                             self.id(),
                             self.id()
                         ),
@@ -940,7 +943,7 @@ impl TargetAdapter for JsonAdapter {
             .filter(|name| !owned.contains_key(*name) && !desired.servers.contains_key(*name))
             .cloned()
             .collect();
-        inventory.only_in_mcpd = desired
+        inventory.only_in_syncplane = desired
             .servers
             .keys()
             .filter(|name| !current.contains_key(*name) && !owned.contains_key(*name))
@@ -949,7 +952,7 @@ impl TargetAdapter for JsonAdapter {
         let rendered = if changes.is_empty() {
             before.clone().unwrap_or_default()
         } else if let Some(source) = before.as_deref() {
-            let source = std::str::from_utf8(source).map_err(|_| McpdError::InvalidInput {
+            let source = std::str::from_utf8(source).map_err(|_| SyncplaneError::InvalidInput {
                 message: format!("{} is not UTF-8", self.path.display()),
                 hint: "repair the target configuration before syncing".into(),
             })?;
@@ -1012,13 +1015,15 @@ fn import_values(
     let Some(value) = value else {
         return Ok(BTreeMap::new());
     };
-    let object = value.as_object().ok_or_else(|| McpdError::InvalidInput {
-        message: format!("MCP server `{name}` environment/headers must be an object"),
-        hint: "use string values".into(),
-    })?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| SyncplaneError::InvalidInput {
+            message: format!("MCP server `{name}` environment/headers must be an object"),
+            hint: "use string values".into(),
+        })?;
     let mut result = BTreeMap::new();
     for (field, value) in object {
-        let value = value.as_str().ok_or_else(|| McpdError::InvalidInput {
+        let value = value.as_str().ok_or_else(|| SyncplaneError::InvalidInput {
             message: format!("MCP server `{name}` field `{field}` must be a string"),
             hint: "repair the target entry".into(),
         })?;
@@ -1037,7 +1042,7 @@ fn import_values(
                 value: crate::secrets::SecretValue::new(value.into()),
             });
         } else if crate::config::is_sensitive_field(field) {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!(
                     "MCP server `{name}` field `{field}` looks secret-bearing and requires migration"
                 ),
@@ -1112,17 +1117,17 @@ fn semantic_difference(native: &Value, rendered: &Value) -> String {
     }
 }
 fn hash_json(value: &Value) -> Result<String> {
-    let bytes = serde_json::to_vec(value).map_err(|error| McpdError::Operational {
+    let bytes = serde_json::to_vec(value).map_err(|error| SyncplaneError::Operational {
         message: format!("could not normalize JSON target value: {error}"),
-        hint: "report this as an mcpd bug".into(),
+        hint: "report this as a Syncplane bug".into(),
     })?;
     Ok(hash_bytes(&bytes))
 }
 
 fn hash_serializable(value: &impl serde::Serialize) -> Result<String> {
-    let bytes = serde_json::to_vec(value).map_err(|error| McpdError::Operational {
+    let bytes = serde_json::to_vec(value).map_err(|error| SyncplaneError::Operational {
         message: format!("could not normalize canonical server: {error}"),
-        hint: "report this as an mcpd bug".into(),
+        hint: "report this as a Syncplane bug".into(),
     })?;
     Ok(hash_bytes(&bytes))
 }
@@ -1134,7 +1139,7 @@ fn env_reference(value: &str) -> Result<Option<&str>> {
         return Ok(Some(name));
     }
     if value.contains("${env:") {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: "invalid environment reference".into(),
             hint: "use `${env:NAME}` as the complete value".into(),
         });

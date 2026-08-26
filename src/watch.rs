@@ -4,7 +4,7 @@ use notify::{RecursiveMode, Watcher};
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     sync,
 };
 
@@ -14,7 +14,7 @@ pub fn run(paths: &Paths) -> Result<()> {
     let parent = paths
         .config
         .parent()
-        .ok_or_else(|| McpdError::Operational {
+        .ok_or_else(|| SyncplaneError::Operational {
             message: format!("{} has no parent directory", paths.config.display()),
             hint: "use an absolute canonical config path".into(),
         })?;
@@ -25,7 +25,7 @@ pub fn run(paths: &Paths) -> Result<()> {
         && project.trusted
     {
         if let Some(parent) = project.overlay.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| McpdError::io(parent, source))?;
+            std::fs::create_dir_all(parent).map_err(|source| SyncplaneError::io(parent, source))?;
             watcher
                 .watch(parent, RecursiveMode::NonRecursive)
                 .map_err(watch_error)?;
@@ -34,9 +34,9 @@ pub fn run(paths: &Paths) -> Result<()> {
     loop {
         receiver
             .recv()
-            .map_err(|error| McpdError::Operational {
+            .map_err(|error| SyncplaneError::Operational {
                 message: format!("watch channel closed: {error}"),
-                hint: "restart mcpd watch".into(),
+                hint: "restart syncplane watch".into(),
             })?
             .map_err(watch_error)?;
         while receiver.recv_timeout(Duration::from_millis(350)).is_ok() {}
@@ -53,8 +53,8 @@ pub fn run(paths: &Paths) -> Result<()> {
     }
 }
 
-fn watch_error(error: notify::Error) -> McpdError {
-    McpdError::Operational {
+fn watch_error(error: notify::Error) -> SyncplaneError {
+    SyncplaneError::Operational {
         message: format!("filesystem watch failed: {error}"),
         hint: "check that the canonical config exists and is readable".into(),
     }

@@ -1,4 +1,8 @@
 /target/
-/.mcpd/
+/.syncplane/
 *.tmp
-
+Cargo.toml.orig
+/site/node_modules/
+/site/dist/
+/site/.astro/
+/site/public/install.sh

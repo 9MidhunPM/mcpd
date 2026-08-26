@@ -1,0 +1,14 @@
+---
+import DocsLayout from '../../components/DocsLayout.astro';
+---
+<DocsLayout title="How it works" description="Understand Syncplane’s canonical configuration, explicit ownership, and target-safe transaction model.">
+  <p class="lead">Syncplane translates a single canonical description into each client’s native configuration format. It does not replace those clients or proxy MCP traffic.</p>
+  <h2>Canonical first</h2>
+  <p>The global file lives at <code>~/.config/syncplane/config.toml</code>. Trusted project overlays live at <code>.syncplane/config.toml</code>. References such as <code>${'{secret:GITHUB_TOKEN}'}</code> stay symbolic during parsing and resolution.</p>
+  <h2>Ownership is explicit</h2>
+  <p>Target files can contain settings and MCP servers created by other tools. Syncplane records its managed server names and normalized hashes in local state rather than embedding private metadata in client configuration. It preserves unmanaged entries.</p>
+  <h2>Each target owns its dialect</h2>
+  <p>Claude Code, Cursor, Codex, Antigravity, and OpenCode have distinct configuration locations and schemas. Target adapters locate, parse, plan, and render those formats; generic sync orchestration does not guess at client-specific behavior.</p>
+  <h2>Writes are transactions per target</h2>
+  <p>Before a target changes, Syncplane parses the current document, creates a private backup where required, renders the planned change in memory, writes a temporary file beside the target, and atomically renames it. Ownership state is persisted only after the target write succeeds.</p>
+</DocsLayout>

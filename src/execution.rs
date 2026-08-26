@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, os::unix::process::CommandExt, process::Command
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     model::{ConfigValue, Server},
     secrets::SecretStore,
 };
@@ -12,9 +12,9 @@ pub fn execute(server_name: &str, paths: &Paths) -> Result<()> {
     let server = config
         .servers
         .get(server_name)
-        .ok_or_else(|| McpdError::InvalidInput {
+        .ok_or_else(|| SyncplaneError::InvalidInput {
             message: format!("server `{server_name}` does not exist"),
-            hint: "run `mcpd list` to see canonical servers".into(),
+            hint: "run `syncplane list` to see canonical servers".into(),
         })?;
     let Server::Stdio {
         command,
@@ -24,15 +24,16 @@ pub fn execute(server_name: &str, paths: &Paths) -> Result<()> {
         cwd,
     } = server
     else {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!("server `{server_name}` is HTTP and cannot be executed locally"),
-            hint: "HTTP MCP servers are connected by target clients; mcpd is not an HTTP proxy"
-                .into(),
+            hint:
+                "HTTP MCP servers are connected by target clients; syncplane is not an HTTP proxy"
+                    .into(),
         });
     };
-    if command == "mcpd" && args.first().is_some_and(|arg| arg == "exec") {
-        return Err(McpdError::InvalidInput {
-            message: format!("server `{server_name}` recursively invokes `mcpd exec`"),
+    if command == "syncplane" && args.first().is_some_and(|arg| arg == "exec") {
+        return Err(SyncplaneError::InvalidInput {
+            message: format!("server `{server_name}` recursively invokes `syncplane exec`"),
             hint: "set its canonical command to the real MCP executable".into(),
         });
     }
@@ -45,7 +46,7 @@ pub fn execute(server_name: &str, paths: &Paths) -> Result<()> {
         child.current_dir(cwd);
     }
     let source = child.exec();
-    Err(McpdError::Operational {
+    Err(SyncplaneError::Operational {
         message: format!("could not execute stdio MCP server `{server_name}`: {source}"),
         hint: "check that the configured command exists and is executable".into(),
     })
@@ -71,11 +72,11 @@ fn resolve_environment(
                     resolve_environment_reference(server_name, name, value)?
                 }
                 ConfigValue::Secret { .. } => {
-                    return Err(McpdError::Operational {
+                    return Err(SyncplaneError::Operational {
                         message: format!(
                             "secret reference for server `{server_name}` was not resolved"
                         ),
-                        hint: "report this as an mcpd bug".into(),
+                        hint: "report this as a Syncplane bug".into(),
                     });
                 }
             }
@@ -96,15 +97,15 @@ fn resolve_environment_reference(server: &str, field: &str, value: &str) -> Resu
         .strip_prefix("${env:")
         .and_then(|value| value.strip_suffix('}'))
     {
-        return std::env::var(name).map_err(|_| McpdError::Operational {
+        return std::env::var(name).map_err(|_| SyncplaneError::Operational {
             message: format!(
                 "environment variable `{name}` required by server `{server}` is not set"
             ),
-            hint: format!("set `{name}` before running `mcpd exec {server}`"),
+            hint: format!("set `{name}` before running `syncplane exec {server}`"),
         });
     }
     if value.contains("${env:") {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "server `{server}` field `{field}` has an invalid environment reference"
             ),
@@ -114,9 +115,9 @@ fn resolve_environment_reference(server: &str, field: &str, value: &str) -> Resu
     Ok(value.into())
 }
 
-fn missing_secret(server: &str, secret: &str) -> McpdError {
-    McpdError::Operational {
+fn missing_secret(server: &str, secret: &str) -> SyncplaneError {
+    SyncplaneError::Operational {
         message: format!("secret `{secret}` required by server `{server}` is missing"),
-        hint: format!("run `mcpd secret set {secret}`"),
+        hint: format!("run `syncplane secret set {secret}`"),
     }
 }

@@ -3,14 +3,14 @@ use std::{
     os::unix::fs::{PermissionsExt, symlink},
 };
 
-use mcpd::{Paths, config, sync, targets::ChangeKind};
+use syncplane::{Paths, config, sync, targets::ChangeKind};
 use tempfile::TempDir;
 
 fn sync_one(
-    config: &mcpd::model::CanonicalConfig,
+    config: &syncplane::model::CanonicalConfig,
     paths: &Paths,
     dry_run: bool,
-) -> mcpd::diagnostics::Result<sync::SyncReport> {
+) -> syncplane::diagnostics::Result<sync::SyncReport> {
     Ok(sync::sync_enabled_targets(config, paths, dry_run)?
         .into_iter()
         .next()
@@ -18,9 +18,9 @@ fn sync_one(
 }
 
 fn sync_one_allowing_removals(
-    config: &mcpd::model::CanonicalConfig,
+    config: &syncplane::model::CanonicalConfig,
     paths: &Paths,
-) -> mcpd::diagnostics::Result<sync::SyncReport> {
+) -> syncplane::diagnostics::Result<sync::SyncReport> {
     Ok(sync::sync_enabled_targets_with_policy(
         config,
         paths,
@@ -33,9 +33,9 @@ fn sync_one_allowing_removals(
 }
 
 fn plan_one(
-    config: &mcpd::model::CanonicalConfig,
+    config: &syncplane::model::CanonicalConfig,
     paths: &Paths,
-) -> mcpd::diagnostics::Result<mcpd::targets::TargetPlan> {
+) -> syncplane::diagnostics::Result<syncplane::targets::TargetPlan> {
     Ok(sync::plan_enabled_targets(config, paths)?
         .into_iter()
         .next()
@@ -52,7 +52,7 @@ fn paths(temp: &TempDir) -> Paths {
     }
 }
 
-fn canonical(path: &std::path::Path, command: &str) -> mcpd::model::CanonicalConfig {
+fn canonical(path: &std::path::Path, command: &str) -> syncplane::model::CanonicalConfig {
     config::parse(
         &format!(
             r#"
@@ -230,7 +230,7 @@ enabled=true
     assert!(!paths.codex_config.exists());
     sync_one(&config, &paths, false).unwrap();
     let target = fs::read_to_string(&paths.codex_config).unwrap();
-    assert!(target.contains("command = \"mcpd\""));
+    assert!(target.contains("command = \"syncplane\""));
     assert!(target.contains("args = [\"exec\", \"secure\"]"));
     #[cfg(target_os = "linux")]
     assert!(target.contains("env_vars = [\"DBUS_SESSION_BUS_ADDRESS\"]"));
@@ -262,7 +262,7 @@ enabled=true
     fs::write(
         &paths.codex_config,
         r#"[mcp_servers.secure]
-command="mcpd"
+command="syncplane"
 args=["exec", "secure"]
 env_vars=["EXISTING", "DBUS_SESSION_BUS_ADDRESS", "EXISTING"]
 "#,

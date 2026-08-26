@@ -1,6 +1,6 @@
 ## Summary
 
-Describe the user-visible behavior and why it belongs in mcpd.
+Describe the user-visible behavior and why it belongs in syncplane.
 
 ## Safety
 

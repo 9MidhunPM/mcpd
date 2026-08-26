@@ -1,13 +1,13 @@
 # Changelog
 
-All notable changes to mcpd are documented here. The project follows semantic versioning.
+All notable changes to syncplane are documented here. The project follows semantic versioning.
 
 ## 1.0.0 - 2026-08-13
 
 ### Added
 
 - Safe synchronization and import for Codex, Claude Code, Cursor, Antigravity, and OpenChamber/OpenCode.
-- Canonical stdio and Streamable HTTP servers, OS-keyring references, guarded `secret get --reveal`, and late `mcpd exec` injection.
+- Canonical stdio and Streamable HTTP servers, OS-keyring references, guarded `secret get --reveal`, and late `syncplane exec` injection.
 - Trusted project overlays with deterministic precedence and explicit trust/revocation commands.
 - Claude user, project, and project-local scopes.
 - JSONC parsing and ownership-region edits that retain comments, trailing-comma compatibility, unmanaged servers, and unrelated settings.

@@ -1,0 +1,8 @@
+---
+interface Props { title: string; lines: string[] }
+const { title, lines } = Astro.props;
+---
+<figure class="terminal-frame">
+  <figcaption><span class="terminal-dot"></span>{title}<span>isolated demo</span></figcaption>
+  <pre><code>{lines.join('\n')}</code></pre>
+</figure>
