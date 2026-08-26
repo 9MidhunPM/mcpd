@@ -1,0 +1,26 @@
+---
+import DocsLayout from '../../components/DocsLayout.astro';
+---
+<DocsLayout title="Getting started" description="Install Syncplane and synchronize one MCP server across enabled clients.">
+  <p class="lead">Install the Linux x86_64 release, define one server, then explicitly choose where Syncplane may project it.</p>
+  <h2>1. Install</h2>
+  <pre><code>curl -fsSL https://syncplane.midhunpm.in/install.sh | sh
+syncplane version</code></pre>
+  <p>If <code>~/.local/bin</code> is not on your PATH, the installer prints the exact line you need for a new shell. Prefer source builds? Run <code>cargo install syncplane</code> after the 1.0.0 crate is published.</p>
+  <h2>2. Create the canonical file</h2>
+  <pre><code>syncplane init
+syncplane add context7 --no-sync -- npx -y @upstash/context7-mcp</code></pre>
+  <p>The <code>--</code> separates Syncplane options from the stdio server command. <code>--no-sync</code> makes this first configuration change explicit and leaves client files untouched.</p>
+  <h2>3. Enable only the clients you want managed</h2>
+  <pre><code>syncplane targets enable codex
+syncplane targets enable claude
+syncplane targets enable cursor
+syncplane targets enable antigravity
+syncplane targets enable opencode</code></pre>
+  <p>Detection is informational. Enabling a target is the deliberate permission boundary.</p>
+  <h2>4. Review, then synchronize</h2>
+  <pre><code>syncplane sync --dry-run
+syncplane sync
+syncplane status</code></pre>
+  <p>Dry-run does not create target files, state, backups, locks, or keyring entries. After a successful sync, run the command again: it should be a semantic no-op.</p>
+</DocsLayout>

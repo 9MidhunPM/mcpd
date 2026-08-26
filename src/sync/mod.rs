@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     model::CanonicalConfig,
     state::{self, TargetState},
     targets::{self, TargetPlan},
@@ -90,23 +90,24 @@ impl SyncBatch {
         hints.sort();
         hints.dedup();
         hints.push(
-            "successful targets were kept; fix the reported targets and rerun `mcpd sync`".into(),
+            "successful targets were kept; fix the reported targets and rerun `syncplane sync`"
+                .into(),
         );
         let hint = hints.join("; ");
         match self.failures[0].exit_code {
-            2 => Err(McpdError::InvalidInput { message, hint }),
-            3 => Err(McpdError::TargetUnavailable {
+            2 => Err(SyncplaneError::InvalidInput { message, hint }),
+            3 => Err(SyncplaneError::TargetUnavailable {
                 target: self.failures[0].target.clone(),
                 message,
                 hint,
             }),
-            4 => Err(McpdError::Conflict { message, hint }),
-            5 => Err(McpdError::Security {
+            4 => Err(SyncplaneError::Conflict { message, hint }),
+            5 => Err(SyncplaneError::Security {
                 path: PathBuf::from("<multiple targets>"),
                 message,
                 hint,
             }),
-            _ => Err(McpdError::Operational { message, hint }),
+            _ => Err(SyncplaneError::Operational { message, hint }),
         }
     }
 }
@@ -144,9 +145,9 @@ fn selected_targets<'a>(
             .get(target)
             .is_some_and(|target| target.enabled)
         {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("target `{target}` is not enabled"),
-                hint: format!("run `mcpd targets enable {target}` first"),
+                hint: format!("run `syncplane targets enable {target}` first"),
             });
         }
         if !result.contains(&target) {
@@ -360,14 +361,14 @@ fn validate_removal_policy(plan: &TargetPlan, policy: &RemovalPolicy) -> Result<
     if blocked.is_empty() {
         return Ok(());
     }
-    Err(McpdError::Conflict {
+    Err(SyncplaneError::Conflict {
         message: format!(
             "refusing to remove {} managed MCP server(s) from {}: {}",
             blocked.len(),
             targets::display_name(&plan.target),
             blocked.join(", ")
         ),
-        hint: "restore missing canonical definitions, inspect `mcpd diff --all`, or rerun `mcpd sync --allow-removals` only when every removal is intentional".into(),
+        hint: "restore missing canonical definitions, inspect `syncplane diff --all`, or rerun `syncplane sync --allow-removals` only when every removal is intentional".into(),
     })
 }
 
@@ -382,9 +383,9 @@ pub(crate) fn with_sync_lock<T>(paths: &Paths, operation: impl FnOnce() -> Resul
         .write(true)
         .mode(0o600)
         .open(&lock_path)
-        .map_err(|source| McpdError::io(&lock_path, source))?;
+        .map_err(|source| SyncplaneError::io(&lock_path, source))?;
     lock.lock_exclusive()
-        .map_err(|source| McpdError::io(&lock_path, source))?;
+        .map_err(|source| SyncplaneError::io(&lock_path, source))?;
     recover_pending(paths)?;
     crate::import::recover_pending(paths)?;
     operation()
@@ -395,26 +396,26 @@ pub fn lock_status(paths: &Paths) -> Result<&'static str> {
     match stdfs::symlink_metadata(&lock_path) {
         Ok(_) => reject_symlink_lock(&lock_path)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok("absent"),
-        Err(source) => return Err(McpdError::io(&lock_path, source)),
+        Err(source) => return Err(SyncplaneError::io(&lock_path, source)),
     }
     let lock = stdfs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(&lock_path)
-        .map_err(|source| McpdError::io(&lock_path, source))?;
+        .map_err(|source| SyncplaneError::io(&lock_path, source))?;
     match lock.try_lock_exclusive() {
         Ok(()) => {
-            fs2::FileExt::unlock(&lock).map_err(|source| McpdError::io(&lock_path, source))?;
+            fs2::FileExt::unlock(&lock).map_err(|source| SyncplaneError::io(&lock_path, source))?;
             Ok("available")
         }
         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok("active"),
-        Err(source) => Err(McpdError::io(&lock_path, source)),
+        Err(source) => Err(SyncplaneError::io(&lock_path, source)),
     }
 }
 
 fn reject_symlink_lock(lock_path: &Path) -> Result<()> {
     if stdfs::symlink_metadata(lock_path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return Err(McpdError::Security {
+        return Err(SyncplaneError::Security {
             path: lock_path.to_path_buf(),
             message: "sync lock is a symbolic link".into(),
             hint: "remove the unexpected symlink before running mutating commands".into(),
@@ -451,17 +452,17 @@ fn backup(plan: &TargetPlan, state_dir: &Path) -> Result<()> {
                 break;
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(source) => return Err(McpdError::io(path, source)),
+            Err(source) => return Err(SyncplaneError::io(path, source)),
         }
     }
-    let (path, mut file) = selected.ok_or_else(|| McpdError::Operational {
+    let (path, mut file) = selected.ok_or_else(|| SyncplaneError::Operational {
         message: format!("could not choose a unique backup name in {}", dir.display()),
         hint: "retry after checking the backup directory".into(),
     })?;
     file.write_all(before)
-        .map_err(|source| McpdError::io(&path, source))?;
+        .map_err(|source| SyncplaneError::io(&path, source))?;
     file.sync_all()
-        .map_err(|source| McpdError::io(&path, source))?;
+        .map_err(|source| SyncplaneError::io(&path, source))?;
     Ok(())
 }
 
@@ -469,10 +470,10 @@ fn verify_snapshot(plan: &TargetPlan) -> Result<()> {
     let current = match stdfs::read(&plan.path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(source) => return Err(McpdError::io(&plan.path, source)),
+        Err(source) => return Err(SyncplaneError::io(&plan.path, source)),
     };
     if current != plan.before {
-        return Err(McpdError::Conflict {
+        return Err(SyncplaneError::Conflict {
             message: format!("{} changed after it was planned", plan.path.display()),
             hint: "review the external edit and rerun sync; no target write was performed".into(),
         });
@@ -515,16 +516,16 @@ pub(crate) fn commit_adoption(
 
 pub(crate) fn ensure_private_dir(path: &Path) -> Result<()> {
     if stdfs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return Err(McpdError::Security {
+        return Err(SyncplaneError::Security {
             path: path.to_path_buf(),
             message: "private state directory is a symbolic link".into(),
-            hint: "replace it with a regular private directory before allowing mcpd to write state"
+            hint: "replace it with a regular private directory before allowing syncplane to write state"
                 .into(),
         });
     }
-    stdfs::create_dir_all(path).map_err(|source| McpdError::io(path, source))?;
+    stdfs::create_dir_all(path).map_err(|source| SyncplaneError::io(path, source))?;
     stdfs::set_permissions(path, stdfs::Permissions::from_mode(0o700))
-        .map_err(|source| McpdError::io(path, source))
+        .map_err(|source| SyncplaneError::io(path, source))
 }
 
 fn pending_path(paths: &Paths) -> PathBuf {
@@ -532,9 +533,9 @@ fn pending_path(paths: &Paths) -> PathBuf {
 }
 
 fn save_pending(paths: &Paths, pending: &PendingTransaction) -> Result<()> {
-    let text = toml::to_string_pretty(pending).map_err(|error| McpdError::Operational {
+    let text = toml::to_string_pretty(pending).map_err(|error| SyncplaneError::Operational {
         message: format!("could not serialize pending transaction: {error}"),
-        hint: "report this as an mcpd bug".into(),
+        hint: "report this as a Syncplane bug".into(),
     })?;
     fs::atomic_write(&pending_path(paths), text.as_bytes(), Some(0o600))
 }
@@ -544,7 +545,7 @@ fn remove_pending(paths: &Paths) -> Result<()> {
     match stdfs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(McpdError::io(path, source)),
+        Err(source) => Err(SyncplaneError::io(path, source)),
     }
 }
 
@@ -553,9 +554,9 @@ fn recover_pending(paths: &Paths) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let text = stdfs::read_to_string(&path).map_err(|source| McpdError::io(&path, source))?;
+    let text = stdfs::read_to_string(&path).map_err(|source| SyncplaneError::io(&path, source))?;
     let pending: PendingTransaction =
-        toml::from_str(&text).map_err(|error| McpdError::InvalidInput {
+        toml::from_str(&text).map_err(|error| SyncplaneError::InvalidInput {
             message: format!(
                 "pending transaction {} is malformed: {error}",
                 path.display()
@@ -564,15 +565,15 @@ fn recover_pending(paths: &Paths) -> Result<()> {
                 .into(),
         })?;
     if pending.version != 1 || targets::adapter(&pending.target, paths).is_err() {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: "unsupported pending transaction record".into(),
-            hint: "use a compatible mcpd version".into(),
+            hint: "use a compatible syncplane version".into(),
         });
     }
     let current = match stdfs::read(&pending.target_path) {
         Ok(bytes) => Some(fs::hash_bytes(&bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(source) => return Err(McpdError::io(&pending.target_path, source)),
+        Err(source) => return Err(SyncplaneError::io(&pending.target_path, source)),
     };
     if current.as_deref() == Some(&pending.desired_hash) {
         let state_path = paths.state_dir.join("state.toml");
@@ -585,13 +586,14 @@ fn recover_pending(paths: &Paths) -> Result<()> {
     } else if current == pending.pre_hash {
         remove_pending(paths)
     } else {
-        Err(McpdError::Conflict {
+        Err(SyncplaneError::Conflict {
             message: format!(
                 "{} config changed during recovery of {}",
                 targets::display_name(&pending.target),
                 path.display()
             ),
-            hint: "inspect the target and backup; mcpd will not guess which version to own".into(),
+            hint: "inspect the target and backup; syncplane will not guess which version to own"
+                .into(),
         })
     }
 }
@@ -600,7 +602,7 @@ pub(crate) fn now_ms() -> Result<u128> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis())
-        .map_err(|error| McpdError::Operational {
+        .map_err(|error| SyncplaneError::Operational {
             message: format!("system clock is before the Unix epoch: {error}"),
             hint: "correct the system clock".into(),
         })

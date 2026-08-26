@@ -2,11 +2,11 @@ use std::{fs, path::PathBuf, process::Command};
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     sync::fs::{atomic_write, ensure_safe_target_path},
 };
 
-const UNIT: &str = "mcpd-watch.service";
+const UNIT: &str = "syncplane-watch.service";
 
 pub fn unit_path(paths: &Paths) -> PathBuf {
     paths.home.join(".config/systemd/user").join(UNIT)
@@ -21,11 +21,11 @@ pub fn install(paths: &Paths) -> Result<PathBuf> {
 }
 
 pub fn generate() -> Result<String> {
-    let executable =
-        std::env::current_exe().map_err(|source| McpdError::io("<current executable>", source))?;
+    let executable = std::env::current_exe()
+        .map_err(|source| SyncplaneError::io("<current executable>", source))?;
     let executable = systemd_quote(&executable.to_string_lossy());
     Ok(format!(
-        "[Unit]\nDescription=mcpd canonical MCP configuration watcher\n\n[Service]\nType=simple\nExecStart={} watch\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=syncplane canonical MCP configuration watcher\n\n[Service]\nType=simple\nExecStart={} watch\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n",
         executable
     ))
 }
@@ -39,7 +39,7 @@ pub fn uninstall(paths: &Paths) -> Result<bool> {
     match fs::remove_file(&path) {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(McpdError::io(path, source)),
+        Err(source) => Err(SyncplaneError::io(path, source)),
     }
 }
 
@@ -52,11 +52,11 @@ pub fn reload_user_manager() -> Result<()> {
     let status = Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .status()
-        .map_err(|source| McpdError::io("systemctl", source))?;
+        .map_err(|source| SyncplaneError::io("systemctl", source))?;
     if status.success() {
         Ok(())
     } else {
-        Err(McpdError::Operational {
+        Err(SyncplaneError::Operational {
             message: "systemctl --user daemon-reload failed".into(),
             hint: "check `systemctl --user status` and your user session bus".into(),
         })
@@ -73,8 +73,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let home = temp.path().join("home");
         let paths = Paths {
-            config: home.join(".config/mcpd/config.toml"),
-            state_dir: home.join(".local/state/mcpd"),
+            config: home.join(".config/syncplane/config.toml"),
+            state_dir: home.join(".local/state/syncplane"),
             codex_config: home.join(".codex/config.toml"),
             home,
         };

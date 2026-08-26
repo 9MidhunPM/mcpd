@@ -10,7 +10,7 @@ use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value, value};
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     model::{CanonicalConfig, ConfigValue, Server, TargetServerConfig},
     state,
     sync::fs::atomic_write,
@@ -26,15 +26,16 @@ pub struct AddServersPlan {
 }
 
 pub fn load(path: &Path) -> Result<CanonicalConfig> {
-    let text = fs::read_to_string(path).map_err(|source| McpdError::io(path, source))?;
+    let text = fs::read_to_string(path).map_err(|source| SyncplaneError::io(path, source))?;
     parse(&text, path)
 }
 
 pub fn parse(text: &str, path: &Path) -> Result<CanonicalConfig> {
     let mut config: CanonicalConfig =
-        toml::from_str(text).map_err(|_| McpdError::InvalidInput {
-            message: format!("{} is not a valid mcpd configuration", path.display()),
-            hint: "fix the reported field or run `mcpd init` if this is a new configuration".into(),
+        toml::from_str(text).map_err(|_| SyncplaneError::InvalidInput {
+            message: format!("{} is not a valid syncplane configuration", path.display()),
+            hint: "fix the reported field or run `syncplane init` if this is a new configuration"
+                .into(),
         })?;
     if !config.targets.contains_key("opencode") {
         if let Some(legacy) = config.targets.remove("openchamber") {
@@ -65,40 +66,42 @@ struct OverlayTarget {
 }
 
 pub fn apply_overlay(global: &CanonicalConfig, path: &Path) -> Result<CanonicalConfig> {
-    let text = fs::read_to_string(path).map_err(|source| McpdError::io(path, source))?;
+    let text = fs::read_to_string(path).map_err(|source| SyncplaneError::io(path, source))?;
     let overlay: ProjectOverlay =
-        toml::from_str(&text).map_err(|error| McpdError::InvalidInput {
+        toml::from_str(&text).map_err(|error| SyncplaneError::InvalidInput {
             message: format!("project overlay {} is invalid: {error}", path.display()),
             hint: "repair the trusted project overlay; the global configuration was not modified"
                 .into(),
         })?;
     if overlay.version != 1 {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "project overlay {} uses unsupported schema version {}",
                 path.display(),
                 overlay.version
             ),
-            hint: "mcpd 1.x supports only `version = 1` and never migrates implicitly".into(),
+            hint: "syncplane 1.x supports only `version = 1` and never migrates implicitly".into(),
         });
     }
 
     let mut resolved = global.clone();
     for (name, value) in overlay.servers {
         if !is_valid_server_id(&name) {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("project overlay server ID `{name}` is invalid"),
                 hint: "use letters, digits, dots, underscores, or hyphens; start with a letter or digit".into(),
             });
         }
-        let table = value.as_table().ok_or_else(|| McpdError::InvalidInput {
-            message: format!("project overlay server `{name}` must be a TOML table"),
-            hint: "define a complete server or use `enabled = false` to disable it".into(),
-        })?;
+        let table = value
+            .as_table()
+            .ok_or_else(|| SyncplaneError::InvalidInput {
+                message: format!("project overlay server `{name}` must be a TOML table"),
+                hint: "define a complete server or use `enabled = false` to disable it".into(),
+            })?;
         let enabled = table.get("enabled").and_then(toml::Value::as_bool);
         if enabled == Some(false) {
             if table.len() != 1 {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!(
                         "disabled project overlay server `{name}` also defines server fields"
                     ),
@@ -110,18 +113,19 @@ pub fn apply_overlay(global: &CanonicalConfig, path: &Path) -> Result<CanonicalC
         }
         let mut server_value = value;
         let Some(server_table) = server_value.as_table_mut() else {
-            return Err(McpdError::Operational {
+            return Err(SyncplaneError::Operational {
                 message: format!("project overlay server `{name}` changed type during validation"),
-                hint: "report this as an mcpd bug".into(),
+                hint: "report this as a Syncplane bug".into(),
             });
         };
         server_table.remove("enabled");
-        let server: Server = server_value
-            .try_into()
-            .map_err(|error| McpdError::InvalidInput {
-                message: format!("project overlay server `{name}` is invalid: {error}"),
-                hint: "define a complete stdio or HTTP server in the overlay".into(),
-            })?;
+        let server: Server =
+            server_value
+                .try_into()
+                .map_err(|error| SyncplaneError::InvalidInput {
+                    message: format!("project overlay server `{name}` is invalid: {error}"),
+                    hint: "define a complete stdio or HTTP server in the overlay".into(),
+                })?;
         resolved.servers.insert(name, server);
     }
     for (id, overlay_target) in overlay.targets {
@@ -140,18 +144,18 @@ pub fn apply_overlay(global: &CanonicalConfig, path: &Path) -> Result<CanonicalC
 
 fn validate(config: &CanonicalConfig, path: &Path) -> Result<()> {
     if config.version != 1 {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "{} uses unsupported schema version {}",
                 path.display(),
                 config.version
             ),
-            hint: "mcpd 1.x supports only `version = 1` and never migrates implicitly".into(),
+            hint: "syncplane 1.x supports only `version = 1` and never migrates implicitly".into(),
         });
     }
     for (id, target) in &config.targets {
         if !is_valid_server_id(id) {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("target ID `{id}` is invalid"),
                 hint: "use letters, digits, dots, underscores, or hyphens; start with a letter or digit".into(),
             });
@@ -161,7 +165,7 @@ fn validate(config: &CanonicalConfig, path: &Path) -> Result<()> {
                 || version.len() > 128
                 || version.chars().any(char::is_control))
         {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("target `{id}` has an invalid client_version"),
                 hint: "use the printable version reported by the client, for example `1.2.3`"
                     .into(),
@@ -170,7 +174,7 @@ fn validate(config: &CanonicalConfig, path: &Path) -> Result<()> {
     }
     for (name, server) in &config.servers {
         if !is_valid_server_id(name) {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("server ID `{name}` is invalid"),
                 hint: "use letters, digits, dots, underscores, or hyphens; start with a letter or digit"
                     .into(),
@@ -178,13 +182,13 @@ fn validate(config: &CanonicalConfig, path: &Path) -> Result<()> {
         }
         match server {
             Server::Stdio { command, .. } if command.trim().is_empty() => {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!("stdio server `{name}` has an empty command"),
                     hint: "set `command` to an executable name or path".into(),
                 });
             }
             Server::Http { url, .. } if !matches!(url.scheme(), "http" | "https") => {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!(
                         "HTTP server `{name}` uses unsupported URL scheme `{}`",
                         url.scheme()
@@ -207,11 +211,11 @@ fn validate(config: &CanonicalConfig, path: &Path) -> Result<()> {
             if is_sensitive_field(field)
                 && matches!(value, ConfigValue::Literal(literal) if !is_complete_env_reference(literal) && value.secret_name().is_none())
             {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!(
                         "server `{name}` field `{field}` looks secret-bearing but contains a literal value"
                     ),
-                    hint: "store the value with `mcpd secret set NAME` and use `{ secret = \"NAME\" }`"
+                    hint: "store the value with `syncplane secret set NAME` and use `{ secret = \"NAME\" }`"
                         .into(),
                 });
             }
@@ -266,19 +270,19 @@ pub fn parse_server_id(value: &str) -> std::result::Result<String, String> {
 pub fn init(paths: &Paths) -> Result<()> {
     let path = &paths.config;
     if path.exists() {
-        return Err(McpdError::Conflict {
+        return Err(SyncplaneError::Conflict {
             message: format!(
                 "refusing to overwrite existing canonical config {}",
                 path.display()
             ),
-            hint: "edit the existing file or remove it explicitly before running `mcpd init`"
+            hint: "edit the existing file or remove it explicitly before running `syncplane init`"
                 .into(),
         });
     }
     let ownership = state::load(&paths.state_dir.join("state.toml"))?;
     let managed = ownership.managed_server_names();
     if !managed.is_empty() {
-        return Err(McpdError::Conflict {
+        return Err(SyncplaneError::Conflict {
             message: format!(
                 "refusing to initialize an empty canonical config: ownership state still tracks {} managed server(s): {}",
                 managed.len(),
@@ -297,9 +301,10 @@ pub fn init(paths: &Paths) -> Result<()> {
 /// replacement, and both the old server table and ownership state constrain the
 /// rendered result.
 pub fn apply_schema_update(paths: &Paths, before: &[u8], rendered: &[u8]) -> Result<PathBuf> {
-    let current = fs::read(&paths.config).map_err(|source| McpdError::io(&paths.config, source))?;
+    let current =
+        fs::read(&paths.config).map_err(|source| SyncplaneError::io(&paths.config, source))?;
     if current != before {
-        return Err(McpdError::Conflict {
+        return Err(SyncplaneError::Conflict {
             message: format!(
                 "{} changed after the schema update was planned",
                 paths.config.display()
@@ -309,10 +314,11 @@ pub fn apply_schema_update(paths: &Paths, before: &[u8], rendered: &[u8]) -> Res
         });
     }
     let old_servers = raw_server_names(before, &paths.config)?;
-    let rendered_text = std::str::from_utf8(rendered).map_err(|_| McpdError::InvalidInput {
-        message: "schema update rendered a non-UTF-8 canonical config".into(),
-        hint: "fix the migration; no file was modified".into(),
-    })?;
+    let rendered_text =
+        std::str::from_utf8(rendered).map_err(|_| SyncplaneError::InvalidInput {
+            message: "schema update rendered a non-UTF-8 canonical config".into(),
+            hint: "fix the migration; no file was modified".into(),
+        })?;
     let updated = parse(rendered_text, &paths.config)?;
     let updated_servers = updated.servers.keys().cloned().collect::<BTreeSet<_>>();
     let ownership = state::load(&paths.state_dir.join("state.toml"))?;
@@ -326,7 +332,7 @@ pub fn apply_schema_update(paths: &Paths, before: &[u8], rendered: &[u8]) -> Res
         .cloned()
         .collect::<Vec<_>>();
     if !missing.is_empty() {
-        return Err(McpdError::Conflict {
+        return Err(SyncplaneError::Conflict {
             message: format!(
                 "schema update would discard canonical or managed server(s): {}",
                 missing.join(", ")
@@ -342,9 +348,9 @@ pub fn apply_schema_update(paths: &Paths, before: &[u8], rendered: &[u8]) -> Res
         crate::sync::fs::hash_bytes(before)
     ));
     if backup.exists() {
-        let existing = fs::read(&backup).map_err(|source| McpdError::io(&backup, source))?;
+        let existing = fs::read(&backup).map_err(|source| SyncplaneError::io(&backup, source))?;
         if existing != before {
-            return Err(McpdError::Conflict {
+            return Err(SyncplaneError::Conflict {
                 message: format!("canonical migration backup {} conflicts", backup.display()),
                 hint: "inspect the backup directory; no canonical file was modified".into(),
             });
@@ -357,17 +363,18 @@ pub fn apply_schema_update(paths: &Paths, before: &[u8], rendered: &[u8]) -> Res
 }
 
 fn raw_server_names(bytes: &[u8], path: &Path) -> Result<BTreeSet<String>> {
-    let text = std::str::from_utf8(bytes).map_err(|_| McpdError::InvalidInput {
+    let text = std::str::from_utf8(bytes).map_err(|_| SyncplaneError::InvalidInput {
         message: format!("{} is not valid UTF-8", path.display()),
         hint: "repair the old canonical config before migrating it".into(),
     })?;
-    let value: toml::Value = toml::from_str(text).map_err(|error| McpdError::InvalidInput {
-        message: format!(
-            "{} cannot be inspected for migration: {error}",
-            path.display()
-        ),
-        hint: "repair the old canonical config before migrating it".into(),
-    })?;
+    let value: toml::Value =
+        toml::from_str(text).map_err(|error| SyncplaneError::InvalidInput {
+            message: format!(
+                "{} cannot be inspected for migration: {error}",
+                path.display()
+            ),
+            hint: "repair the old canonical config before migrating it".into(),
+        })?;
     Ok(value
         .get("servers")
         .and_then(toml::Value::as_table)
@@ -379,7 +386,7 @@ pub fn add_server(path: &Path, name: &str, server: &Server) -> Result<()> {
     mutate(path, |doc| {
         let servers = ensure_table(doc, "servers")?;
         if servers.contains_key(name) {
-            return Err(McpdError::Conflict {
+            return Err(SyncplaneError::Conflict {
                 message: format!("server `{name}` already exists in {}", path.display()),
                 hint: "remove it first or choose a different name".into(),
             });
@@ -393,21 +400,21 @@ pub fn plan_add_servers(
     path: &Path,
     additions: &BTreeMap<String, Server>,
 ) -> Result<AddServersPlan> {
-    let before = fs::read(path).map_err(|source| McpdError::io(path, source))?;
-    let text = std::str::from_utf8(&before).map_err(|_| McpdError::InvalidInput {
+    let before = fs::read(path).map_err(|source| SyncplaneError::io(path, source))?;
+    let text = std::str::from_utf8(&before).map_err(|_| SyncplaneError::InvalidInput {
         message: format!("{} is not valid UTF-8", path.display()),
         hint: "repair the canonical configuration before importing".into(),
     })?;
     let mut doc = text
         .parse::<DocumentMut>()
-        .map_err(|_| McpdError::InvalidInput {
+        .map_err(|_| SyncplaneError::InvalidInput {
             message: format!("{} is not valid TOML", path.display()),
-            hint: "repair the TOML before asking mcpd to modify it".into(),
+            hint: "repair the TOML before asking syncplane to modify it".into(),
         })?;
     {
         let servers = ensure_table(&mut doc, "servers")?;
         if let Some(name) = additions.keys().find(|name| servers.contains_key(name)) {
-            return Err(McpdError::Conflict {
+            return Err(SyncplaneError::Conflict {
                 message: format!("server `{name}` already exists in {}", path.display()),
                 hint: "keep the target entry unmanaged or remove/rename the canonical entry explicitly"
                     .into(),
@@ -428,9 +435,9 @@ pub fn plan_add_servers(
 }
 
 pub fn apply_add_servers(path: &Path, plan: &AddServersPlan) -> Result<()> {
-    let current = fs::read(path).map_err(|source| McpdError::io(path, source))?;
+    let current = fs::read(path).map_err(|source| SyncplaneError::io(path, source))?;
     if current != plan.before {
-        return Err(McpdError::Conflict {
+        return Err(SyncplaneError::Conflict {
             message: format!("{} changed after import was planned", path.display()),
             hint: "review the external edit and rerun import; no write was performed".into(),
         });
@@ -442,9 +449,9 @@ pub fn remove_server(path: &Path, name: &str) -> Result<()> {
     mutate(path, |doc| {
         let servers = ensure_table(doc, "servers")?;
         if servers.remove(name).is_none() {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("server `{name}` does not exist"),
-                hint: "run `mcpd list` to see canonical servers".into(),
+                hint: "run `syncplane list` to see canonical servers".into(),
             });
         }
         Ok(())
@@ -464,7 +471,7 @@ pub fn set_target_enabled(path: &Path, target: &str, enabled: bool) -> Result<()
         }
         let table = targets[target]
             .as_table_mut()
-            .ok_or_else(|| McpdError::InvalidInput {
+            .ok_or_else(|| SyncplaneError::InvalidInput {
                 message: format!("[targets.{target}] must be a table"),
                 hint: "replace the value with a TOML table".into(),
             })?;
@@ -474,12 +481,12 @@ pub fn set_target_enabled(path: &Path, target: &str, enabled: bool) -> Result<()
 }
 
 fn mutate(path: &Path, operation: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Result<()> {
-    let text = fs::read_to_string(path).map_err(|source| McpdError::io(path, source))?;
+    let text = fs::read_to_string(path).map_err(|source| SyncplaneError::io(path, source))?;
     let mut doc = text
         .parse::<DocumentMut>()
-        .map_err(|_| McpdError::InvalidInput {
+        .map_err(|_| SyncplaneError::InvalidInput {
             message: format!("{} is not valid TOML", path.display()),
-            hint: "repair the TOML before asking mcpd to modify it".into(),
+            hint: "repair the TOML before asking syncplane to modify it".into(),
         })?;
     operation(&mut doc)?;
     let rendered = doc.to_string();
@@ -493,7 +500,7 @@ fn ensure_table<'a>(doc: &'a mut DocumentMut, key: &str) -> Result<&'a mut Table
     }
     doc[key]
         .as_table_mut()
-        .ok_or_else(|| McpdError::InvalidInput {
+        .ok_or_else(|| SyncplaneError::InvalidInput {
             message: format!("`{key}` must be a TOML table"),
             hint: format!("replace `{key}` with `[{key}]`"),
         })
@@ -582,8 +589,8 @@ mod tests {
     fn test_paths(temp: &TempDir) -> Paths {
         let home = temp.path().join("home");
         Paths {
-            config: temp.path().join("config/mcpd/config.toml"),
-            state_dir: temp.path().join("state/mcpd"),
+            config: temp.path().join("config/syncplane/config.toml"),
+            state_dir: temp.path().join("state/syncplane"),
             codex_config: home.join(".codex/config.toml"),
             home,
         }
@@ -629,7 +636,11 @@ mod tests {
             Path::new("test.toml"),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("not a valid mcpd configuration"));
+        assert!(
+            error
+                .to_string()
+                .contains("not a valid syncplane configuration")
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible mcpd defect without including secrets.
+description: Report a reproducible syncplane defect without including secrets.
 title: "bug: "
 labels: ["bug"]
 body:
@@ -9,8 +9,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: mcpd version
-      placeholder: "mcpd 1.0.0"
+      label: syncplane version
+      placeholder: "syncplane 1.0.0"
     validations:
       required: true
   - type: dropdown

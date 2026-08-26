@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   linux-x86_64:
@@ -31,20 +33,26 @@ jobs:
         run: |
           cargo build --locked --release
           mkdir -p dist/package
-          install -m 0755 target/release/mcpd dist/package/mcpd
+          install -m 0755 target/release/syncplane dist/package/syncplane
           install -m 0644 README.md LICENSE CHANGELOG.md dist/package/
-          archive="mcpd-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz"
+          archive="syncplane-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz"
           tar -C dist/package -czf "dist/${archive}" .
           cd dist
           sha256sum "${archive}" > checksums.txt
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v6
         with:
-          name: mcpd-linux-x86_64
+          name: syncplane-linux-x86_64
           path: |
             dist/*.tar.gz
             dist/checksums.txt
           if-no-files-found: error
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/checksums.txt
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

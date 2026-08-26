@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use toml_edit::{Array, DocumentMut, Item, Table, Value, value};
 
 use crate::{
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     model::{CanonicalConfig, ConfigValue, Server},
     state::{ManagedServer, TargetState},
     sync::fs::ensure_safe_target_path,
@@ -101,7 +101,7 @@ impl TargetAdapter for CodexAdapter {
         mode: ImportMode,
     ) -> Result<TargetImport> {
         let Some((snapshot, document)) = self.read_document(false)? else {
-            return Err(McpdError::TargetUnavailable {
+            return Err(SyncplaneError::TargetUnavailable {
                 target: self.id().into(),
                 message: format!("configuration {} does not exist", self.path.display()),
                 hint: "configure at least one Codex MCP server before importing".into(),
@@ -110,9 +110,9 @@ impl TargetAdapter for CodexAdapter {
         let current = current_servers(&document)?;
         if let Some(selection) = selection {
             if let Some(missing) = selection.iter().find(|name| !current.contains_key(*name)) {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!("Codex MCP server `{missing}` does not exist"),
-                    hint: "run `mcpd diff --all` to list unmanaged Codex servers".into(),
+                    hint: "run `syncplane diff --all` to list unmanaged Codex servers".into(),
                 });
             }
         }
@@ -126,7 +126,7 @@ impl TargetAdapter for CodexAdapter {
             }
             let imported = (|| {
                 if !crate::config::is_valid_server_id(&name) {
-                    return Err(McpdError::InvalidInput {
+                    return Err(SyncplaneError::InvalidInput {
                         message: format!("Codex MCP server `{name}` is not a valid canonical server ID"),
                         hint: "rename the target entry to match [a-zA-Z0-9][a-zA-Z0-9._-]* before importing".into(),
                     });
@@ -136,7 +136,7 @@ impl TargetAdapter for CodexAdapter {
                 let rendered_hash = hash_item(&expected)?;
                 let current_hash = hash_item(&item)?;
                 if migrations.is_empty() && rendered_hash != current_hash {
-                    return Err(McpdError::InvalidInput {
+                    return Err(SyncplaneError::InvalidInput {
                         message: format!("Codex MCP server `{name}` cannot be imported losslessly"),
                         hint:
                             "remove unsupported or redundant native fields, then retry the import"
@@ -179,7 +179,7 @@ impl TargetAdapter for CodexAdapter {
                     });
                     continue;
                 }
-                return Err(McpdError::Conflict {
+                return Err(SyncplaneError::Conflict {
                     message: format!(
                         "multiple imported values were mapped to secret `{secret_name}`"
                     ),
@@ -226,22 +226,22 @@ impl TargetAdapter for CodexAdapter {
         let before = match fs::read(&self.path) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(source) => return Err(McpdError::io(&self.path, source)),
+            Err(source) => return Err(SyncplaneError::io(&self.path, source)),
         };
         let source = before
             .as_deref()
             .map(std::str::from_utf8)
             .transpose()
-            .map_err(|_| McpdError::InvalidInput {
+            .map_err(|_| SyncplaneError::InvalidInput {
                 message: format!("Codex config {} is not UTF-8", self.path.display()),
                 hint: "restore a valid UTF-8 TOML file before syncing".into(),
             })?
             .unwrap_or("");
         let mut doc = source
             .parse::<DocumentMut>()
-            .map_err(|_| McpdError::InvalidInput {
+            .map_err(|_| SyncplaneError::InvalidInput {
                 message: format!("Codex config {} is malformed TOML", self.path.display()),
-                hint: "repair the file; mcpd never overwrites malformed target configuration"
+                hint: "repair the file; syncplane never overwrites malformed target configuration"
                     .into(),
             })?;
 
@@ -271,10 +271,10 @@ impl TargetAdapter for CodexAdapter {
             let canonical_hash = hash_serializable(server)?;
             match current.get(name) {
                 Some(_) if !owned.contains_key(name) => {
-                    return Err(McpdError::Conflict {
+                    return Err(SyncplaneError::Conflict {
                         message: format!("Codex already has unmanaged MCP server `{name}`"),
                         hint: format!(
-                            "run `mcpd adopt codex {name}` when it matches canonical state, or use `mcpd adopt codex {name} --replace --yes`"
+                            "run `syncplane adopt codex {name}` when it matches canonical state, or use `syncplane adopt codex {name} --replace --yes`"
                         ),
                     });
                 }
@@ -341,7 +341,7 @@ impl TargetAdapter for CodexAdapter {
             .filter(|name| !owned.contains_key(*name) && !desired.servers.contains_key(*name))
             .cloned()
             .collect();
-        inventory.only_in_mcpd = desired
+        inventory.only_in_syncplane = desired
             .servers
             .keys()
             .filter(|name| !current.contains_key(*name) && !owned.contains_key(*name))
@@ -417,7 +417,7 @@ impl TargetAdapter for CodexAdapter {
             Ok(None)
         } else {
             Ok(Some(format!(
-                "managed Codex wrapper(s) {} lack required Linux keyring environment forwarding {}; run `mcpd sync --target codex`",
+                "managed Codex wrapper(s) {} lack required Linux keyring environment forwarding {}; run `syncplane sync --target codex`",
                 missing
                     .iter()
                     .map(|name| format!("`{name}`"))
@@ -441,17 +441,17 @@ impl CodexAdapter {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(None);
             }
-            Err(source) => return Err(McpdError::io(&self.path, source)),
+            Err(source) => return Err(SyncplaneError::io(&self.path, source)),
         };
-        let source = std::str::from_utf8(&snapshot).map_err(|_| McpdError::InvalidInput {
+        let source = std::str::from_utf8(&snapshot).map_err(|_| SyncplaneError::InvalidInput {
             message: format!("Codex config {} is not UTF-8", self.path.display()),
             hint: "restore a valid UTF-8 TOML file before importing".into(),
         })?;
         let document = source
             .parse::<DocumentMut>()
-            .map_err(|_| McpdError::InvalidInput {
+            .map_err(|_| SyncplaneError::InvalidInput {
                 message: format!("Codex config {} is malformed TOML", self.path.display()),
-                hint: "repair the file; mcpd never overwrites malformed target configuration"
+                hint: "repair the file; syncplane never overwrites malformed target configuration"
                     .into(),
             })?;
         Ok(Some((snapshot, document)))
@@ -464,14 +464,16 @@ fn import_server(
     secret_mappings: &BTreeMap<String, String>,
 ) -> Result<(Server, Vec<(String, String)>)> {
     let value = item_value(item)?;
-    let table = value.as_table().ok_or_else(|| McpdError::InvalidInput {
-        message: format!("Codex MCP server `{name}` must be a TOML table"),
-        hint: "repair the Codex MCP entry before importing it".into(),
-    })?;
+    let table = value
+        .as_table()
+        .ok_or_else(|| SyncplaneError::InvalidInput {
+            message: format!("Codex MCP server `{name}` must be a TOML table"),
+            hint: "repair the Codex MCP entry before importing it".into(),
+        })?;
     let has_command = table.contains_key("command");
     let has_url = table.contains_key("url");
     if has_command == has_url {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "Codex MCP server `{name}` must define exactly one of `command` or `url`"
             ),
@@ -483,7 +485,7 @@ fn import_server(
         reject_unknown_fields(name, table, &["command", "args", "cwd", "env", "env_vars"])?;
         let command = required_string(name, table, "command")?;
         if command.trim().is_empty() {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("Codex MCP server `{name}` has an empty command"),
                 hint: "set a command before importing it".into(),
             });
@@ -494,7 +496,7 @@ fn import_server(
         let mut env = imported.values;
         for variable in optional_string_array(name, table, "env_vars")? {
             if variable.is_empty() || variable.chars().any(char::is_whitespace) {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!(
                         "Codex MCP server `{name}` has invalid forwarded environment variable `{variable}`"
                     ),
@@ -519,28 +521,30 @@ fn import_server(
     } else {
         reject_unknown_fields(name, table, &["url", "http_headers", "env_http_headers"])?;
         let url_text = required_string(name, table, "url")?;
-        let url = url::Url::parse(&url_text).map_err(|error| McpdError::InvalidInput {
+        let url = url::Url::parse(&url_text).map_err(|error| SyncplaneError::InvalidInput {
             message: format!("Codex MCP server `{name}` has an invalid URL: {error}"),
             hint: "use an absolute http:// or https:// URL before importing".into(),
         })?;
         let imported = import_literal_values(name, table, "http_headers", secret_mappings)?;
         let mut headers = imported.values;
         if let Some(values) = table.get("env_http_headers") {
-            let values = values.as_table().ok_or_else(|| McpdError::InvalidInput {
-                message: format!(
-                    "Codex MCP server `{name}` field `env_http_headers` must be a table"
-                ),
-                hint: "map each HTTP header name to an environment variable name".into(),
-            })?;
+            let values = values
+                .as_table()
+                .ok_or_else(|| SyncplaneError::InvalidInput {
+                    message: format!(
+                        "Codex MCP server `{name}` field `env_http_headers` must be a table"
+                    ),
+                    hint: "map each HTTP header name to an environment variable name".into(),
+                })?;
             for (header, source) in values {
-                let source = source.as_str().ok_or_else(|| McpdError::InvalidInput {
+                let source = source.as_str().ok_or_else(|| SyncplaneError::InvalidInput {
                     message: format!(
                         "Codex MCP server `{name}` environment header `{header}` must be a string"
                     ),
                     hint: "set the value to an environment variable name".into(),
                 })?;
                 if source.is_empty() || source.chars().any(char::is_whitespace) {
-                    return Err(McpdError::InvalidInput {
+                    return Err(SyncplaneError::InvalidInput {
                         message: format!(
                             "Codex MCP server `{name}` has invalid environment variable `{source}`"
                         ),
@@ -568,15 +572,15 @@ fn item_value(item: &Item) -> Result<toml::Value> {
     let mut document = DocumentMut::new();
     document.insert("server", item.clone());
     let root: toml::Value =
-        toml::from_str(&document.to_string()).map_err(|_| McpdError::InvalidInput {
+        toml::from_str(&document.to_string()).map_err(|_| SyncplaneError::InvalidInput {
             message: "could not parse native Codex MCP entry".into(),
             hint: "repair the Codex MCP entry before importing it".into(),
         })?;
     root.get("server")
         .cloned()
-        .ok_or_else(|| McpdError::Operational {
+        .ok_or_else(|| SyncplaneError::Operational {
             message: "normalized Codex MCP entry disappeared".into(),
-            hint: "report this as an mcpd bug".into(),
+            hint: "report this as a Syncplane bug".into(),
         })
 }
 
@@ -589,7 +593,7 @@ fn reject_unknown_fields(
         .keys()
         .find(|field| !allowed.contains(&field.as_str()))
     {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "Codex MCP server `{name}` uses unsupported field `{field}` and cannot be imported losslessly"
             ),
@@ -616,14 +620,16 @@ fn import_literal_values(
             migrations: Vec::new(),
         });
     };
-    let values = value.as_table().ok_or_else(|| McpdError::InvalidInput {
-        message: format!("Codex MCP server `{name}` field `{field}` must be a table"),
-        hint: "repair the native entry before importing it".into(),
-    })?;
+    let values = value
+        .as_table()
+        .ok_or_else(|| SyncplaneError::InvalidInput {
+            message: format!("Codex MCP server `{name}` field `{field}` must be a table"),
+            hint: "repair the native entry before importing it".into(),
+        })?;
     let mut imported = BTreeMap::new();
     let mut migrations = Vec::new();
     for (key, value) in values {
-        let value = value.as_str().ok_or_else(|| McpdError::InvalidInput {
+        let value = value.as_str().ok_or_else(|| SyncplaneError::InvalidInput {
             message: format!("Codex MCP server `{name}` field `{field}.{key}` must be a string"),
             hint: "repair the native entry before importing it".into(),
         })?;
@@ -636,7 +642,7 @@ fn import_literal_values(
             imported.insert(key.clone(), ConfigValue::secret(secret_name));
             migrations.push((secret_name.clone(), value.to_owned()));
         } else if crate::config::is_sensitive_field(key) {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!(
                     "Codex MCP server `{name}` field `{key}` looks secret-bearing and requires explicit migration"
                 ),
@@ -665,7 +671,7 @@ fn required_string(
         .get(field)
         .and_then(toml::Value::as_str)
         .map(str::to_owned)
-        .ok_or_else(|| McpdError::InvalidInput {
+        .ok_or_else(|| SyncplaneError::InvalidInput {
             message: format!("Codex MCP server `{name}` field `{field}` must be a string"),
             hint: "repair the native entry before importing it".into(),
         })
@@ -682,7 +688,7 @@ fn optional_string(
             value
                 .as_str()
                 .map(str::to_owned)
-                .ok_or_else(|| McpdError::InvalidInput {
+                .ok_or_else(|| SyncplaneError::InvalidInput {
                     message: format!("Codex MCP server `{name}` field `{field}` must be a string"),
                     hint: "repair the native entry before importing it".into(),
                 })
@@ -698,17 +704,19 @@ fn optional_string_array(
     let Some(value) = table.get(field) else {
         return Ok(Vec::new());
     };
-    let values = value.as_array().ok_or_else(|| McpdError::InvalidInput {
-        message: format!("Codex MCP server `{name}` field `{field}` must be an array"),
-        hint: "repair the native entry before importing it".into(),
-    })?;
+    let values = value
+        .as_array()
+        .ok_or_else(|| SyncplaneError::InvalidInput {
+            message: format!("Codex MCP server `{name}` field `{field}` must be an array"),
+            hint: "repair the native entry before importing it".into(),
+        })?;
     values
         .iter()
         .map(|value| {
             value
                 .as_str()
                 .map(str::to_owned)
-                .ok_or_else(|| McpdError::InvalidInput {
+                .ok_or_else(|| SyncplaneError::InvalidInput {
                     message: format!(
                         "Codex MCP server `{name}` field `{field}` must contain only strings"
                     ),
@@ -751,7 +759,7 @@ fn render_server(
             secrets: _,
         } => {
             if server_uses_runtime_wrapper(server) {
-                table.insert("command", value("mcpd"));
+                table.insert("command", value("syncplane"));
                 let mut wrapper_args = Array::new();
                 wrapper_args.push("exec");
                 wrapper_args.push(name);
@@ -790,14 +798,14 @@ fn render_server(
             let mut forwarded_env = Vec::new();
             for (key, value_) in env {
                 let ConfigValue::Literal(value_) = value_ else {
-                    return Err(McpdError::Operational {
+                    return Err(SyncplaneError::Operational {
                         message: format!("secret reference for `{name}` escaped runtime wrapping"),
-                        hint: "report this as an mcpd bug".into(),
+                        hint: "report this as a Syncplane bug".into(),
                     });
                 };
                 if let Some(source) = env_reference(value_)? {
                     if source != key {
-                        return Err(McpdError::InvalidInput {
+                        return Err(SyncplaneError::InvalidInput {
                             message: format!("Codex cannot map environment `{source}` to `{key}` for server `{name}`"),
                             hint: "use the same source and destination name, or provide a non-secret literal value".into(),
                         });
@@ -831,11 +839,11 @@ fn render_server(
             secrets,
         } => {
             if let Some(secret) = secrets.values().next() {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!(
                         "Codex cannot resolve OS-keyring secret `{secret}` for HTTP server `{name}`"
                     ),
-                    hint: "use an environment reference supported by Codex; mcpd does not proxy HTTP MCP traffic"
+                    hint: "use an environment reference supported by Codex; syncplane does not proxy HTTP MCP traffic"
                         .into(),
                 });
             }
@@ -844,18 +852,18 @@ fn render_server(
             let mut forwarded_headers = BTreeMap::new();
             for (header, value_) in headers {
                 if let Some(secret) = value_.secret_name() {
-                    return Err(McpdError::InvalidInput {
+                    return Err(SyncplaneError::InvalidInput {
                         message: format!(
                             "Codex cannot resolve OS-keyring secret `{secret}` for HTTP server `{name}`"
                         ),
-                        hint: "use an environment reference supported by Codex; mcpd does not proxy HTTP MCP traffic"
+                        hint: "use an environment reference supported by Codex; syncplane does not proxy HTTP MCP traffic"
                             .into(),
                     });
                 }
                 let ConfigValue::Literal(value_) = value_ else {
-                    return Err(McpdError::Operational {
+                    return Err(SyncplaneError::Operational {
                         message: format!("secret HTTP header for `{name}` escaped validation"),
-                        hint: "report this as an mcpd bug".into(),
+                        hint: "report this as a Syncplane bug".into(),
                     });
                 };
                 if let Some(source) = env_reference(value_)? {
@@ -904,7 +912,7 @@ fn wrapper_env_vars(name: &str, item: &Item) -> Result<Option<BTreeSet<String>>>
     let Some(table) = value.as_table() else {
         return Ok(None);
     };
-    if table.get("command").and_then(toml::Value::as_str) != Some("mcpd")
+    if table.get("command").and_then(toml::Value::as_str) != Some("syncplane")
         || optional_string_array(name, table, "args")? != ["exec", name]
     {
         return Ok(None);
@@ -912,7 +920,7 @@ fn wrapper_env_vars(name: &str, item: &Item) -> Result<Option<BTreeSet<String>>>
     let mut forwarded = BTreeSet::new();
     for variable in optional_string_array(name, table, "env_vars")? {
         if variable.is_empty() || variable.chars().any(char::is_whitespace) {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!(
                     "managed Codex wrapper `{name}` has invalid forwarded environment variable `{variable}`"
                 ),
@@ -934,7 +942,7 @@ fn env_reference(value: &str) -> Result<Option<&str>> {
         }
     }
     if value.contains("${env:") {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!("invalid or embedded environment reference `{value}`"),
             hint: "use the complete form `${env:NAME}` as the entire value".into(),
         });
@@ -946,10 +954,12 @@ fn current_servers(doc: &DocumentMut) -> Result<BTreeMap<String, Item>> {
     let Some(item) = doc.get("mcp_servers") else {
         return Ok(BTreeMap::new());
     };
-    let table = item.as_table().ok_or_else(|| McpdError::InvalidInput {
-        message: "Codex `mcp_servers` must be a TOML table".into(),
-        hint: "repair the Codex configuration before syncing".into(),
-    })?;
+    let table = item
+        .as_table()
+        .ok_or_else(|| SyncplaneError::InvalidInput {
+            message: "Codex `mcp_servers` must be a TOML table".into(),
+            hint: "repair the Codex configuration before syncing".into(),
+        })?;
     Ok(table
         .iter()
         .map(|(name, item)| (name.to_owned(), item.clone()))
@@ -962,7 +972,7 @@ fn servers_table(doc: &mut DocumentMut) -> Result<&mut Table> {
     }
     doc["mcp_servers"]
         .as_table_mut()
-        .ok_or_else(|| McpdError::InvalidInput {
+        .ok_or_else(|| SyncplaneError::InvalidInput {
             message: "Codex `mcp_servers` must be a TOML table".into(),
             hint: "repair the Codex configuration before syncing".into(),
         })
@@ -982,17 +992,17 @@ fn hash_item(item: &Item) -> Result<String> {
     let mut document = DocumentMut::new();
     document.insert("server", item.clone());
     let value: toml::Value =
-        toml::from_str(&document.to_string()).map_err(|error| McpdError::Operational {
+        toml::from_str(&document.to_string()).map_err(|error| SyncplaneError::Operational {
             message: format!("could not normalize rendered Codex entry: {error}"),
-            hint: "report this as an mcpd bug".into(),
+            hint: "report this as a Syncplane bug".into(),
         })?;
     hash_serializable(&value)
 }
 
 fn hash_serializable(value: &impl serde::Serialize) -> Result<String> {
-    let bytes = serde_json::to_vec(value).map_err(|error| McpdError::Operational {
+    let bytes = serde_json::to_vec(value).map_err(|error| SyncplaneError::Operational {
         message: format!("could not normalize configuration: {error}"),
-        hint: "report this as an mcpd bug".into(),
+        hint: "report this as a Syncplane bug".into(),
     })?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }

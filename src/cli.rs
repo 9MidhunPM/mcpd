@@ -11,7 +11,7 @@ use url::Url;
 
 use crate::{
     Paths, config,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     import,
     model::Server,
     output, sync, targets,
@@ -19,7 +19,7 @@ use crate::{
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "mcpd",
+    name = "syncplane",
     version,
     about = "Configure MCP once. Use it everywhere."
 )]
@@ -79,7 +79,7 @@ enum Command {
     },
     /// Import existing target MCP definitions into canonical configuration.
     Import(ImportCommand),
-    /// Adopt an equivalent existing target MCP into mcpd ownership.
+    /// Adopt an equivalent existing target MCP into syncplane ownership.
     Adopt(AdoptCommand),
     /// Store and inspect secret names using the operating-system keyring.
     Secret {
@@ -104,7 +104,7 @@ enum Command {
         #[command(flatten)]
         targets: TargetFilter,
     },
-    /// Trust, list, or revoke project-local mcpd overlays.
+    /// Trust, list, or revoke project-local syncplane overlays.
     Trust(TrustCommand),
     /// Watch canonical configuration and synchronize enabled targets after a debounce.
     Watch,
@@ -115,7 +115,7 @@ enum Command {
     },
     /// Generate shell completion scripts on stdout.
     Completions { shell: Shell },
-    /// Print the mcpd version.
+    /// Print the syncplane version.
     Version,
 }
 
@@ -210,7 +210,7 @@ enum SecretCommand {
 
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("selection").args(["server", "all"])))]
-#[command(override_usage = "mcpd import (<TARGET> (<SERVER>|--all)|all) [OPTIONS]")]
+#[command(override_usage = "syncplane import (<TARGET> (<SERVER>|--all)|all) [OPTIONS]")]
 struct ImportCommand {
     target: String,
     #[arg(value_parser = config::parse_server_id)]
@@ -222,7 +222,7 @@ struct ImportCommand {
     /// Abort an --all import if any selected server cannot be imported safely.
     #[arg(long)]
     strict: bool,
-    /// Limit `mcpd import all` to one or more detected targets.
+    /// Limit `syncplane import all` to one or more detected targets.
     #[arg(long = "target")]
     targets: Vec<String>,
     /// Accept the deterministic first discovered definition for conflicts during `import all`.
@@ -237,7 +237,7 @@ struct ImportCommand {
 
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("adopt_selection").required(true).args(["server", "all"])))]
-#[command(override_usage = "mcpd adopt <TARGET> (<SERVER>|--all) [OPTIONS]")]
+#[command(override_usage = "syncplane adopt <TARGET> (<SERVER>|--all) [OPTIONS]")]
 struct AdoptCommand {
     target: String,
     #[arg(value_parser = config::parse_server_id)]
@@ -302,7 +302,7 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
             message(
                 &cli,
                 format!(
-                    "mcpd initialized\nCanonical config: {}\nNo clients were modified.",
+                    "syncplane initialized\nCanonical config: {}\nNo clients were modified.",
                     paths.config.display()
                 ),
             )
@@ -364,13 +364,14 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
         }
         Command::Get { name } => {
             let canonical = crate::resolve::load(&paths)?.config;
-            let server = canonical
-                .servers
-                .get(name)
-                .ok_or_else(|| McpdError::InvalidInput {
-                    message: format!("server `{name}` does not exist"),
-                    hint: "run `mcpd list` to see canonical servers".into(),
-                })?;
+            let server =
+                canonical
+                    .servers
+                    .get(name)
+                    .ok_or_else(|| SyncplaneError::InvalidInput {
+                        message: format!("server `{name}` does not exist"),
+                        hint: "run `syncplane list` to see canonical servers".into(),
+                    })?;
             if cli.json {
                 output::json(server)
             } else if cli.quiet {
@@ -378,9 +379,11 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
             } else {
                 println!(
                     "{}",
-                    toml::to_string_pretty(server).map_err(|error| McpdError::Operational {
-                        message: format!("could not render server: {error}"),
-                        hint: "report this as an mcpd bug".into(),
+                    toml::to_string_pretty(server).map_err(|error| {
+                        SyncplaneError::Operational {
+                            message: format!("could not render server: {error}"),
+                            hint: "report this as a Syncplane bug".into(),
+                        }
                     })?
                 );
                 Ok(())
@@ -517,9 +520,9 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     || command.strict
                     || !command.secrets.is_empty()
                 {
-                    return Err(McpdError::InvalidInput {
-                        message: "`mcpd import all` does not accept a server selection, --strict, or --secret".into(),
-                        hint: "use `mcpd import <target> <server>` for advanced per-target imports".into(),
+                    return Err(SyncplaneError::InvalidInput {
+                        message: "`syncplane import all` does not accept a server selection, --strict, or --secret".into(),
+                        hint: "use `syncplane import <target> <server>` for advanced per-target imports".into(),
                     });
                 }
                 let report = crate::onboard::import_all(
@@ -532,16 +535,17 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 return render_onboard_report(&cli, &report);
             }
             if command.server.is_none() && !command.all {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: "target imports require <SERVER> or --all".into(),
-                    hint: "use `mcpd import all` for first-time onboarding".into(),
+                    hint: "use `syncplane import all` for first-time onboarding".into(),
                 });
             }
             if !command.targets.is_empty() || command.yes || command.no_sync {
-                return Err(McpdError::InvalidInput {
-                    message: "--target, --yes, and --no-sync are only valid with `mcpd import all`"
-                        .into(),
-                    hint: "use `mcpd import all --help` for onboarding options".into(),
+                return Err(SyncplaneError::InvalidInput {
+                    message:
+                        "--target, --yes, and --no-sync are only valid with `syncplane import all`"
+                            .into(),
+                    hint: "use `syncplane import all --help` for onboarding options".into(),
                 });
             }
             let selection = command.server.iter().cloned().collect::<BTreeSet<_>>();
@@ -563,21 +567,21 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                     eprint!("Replace conflicting target definitions with canonical state? [y/N] ");
                     io::stderr()
                         .flush()
-                        .map_err(|source| McpdError::io("<terminal>", source))?;
+                        .map_err(|source| SyncplaneError::io("<terminal>", source))?;
                     let mut answer = String::new();
                     io::stdin()
                         .read_line(&mut answer)
-                        .map_err(|source| McpdError::io("<terminal>", source))?;
+                        .map_err(|source| SyncplaneError::io("<terminal>", source))?;
                     if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
                         // Explicit interactive confirmation.
                     } else {
-                        return Err(McpdError::Conflict {
+                        return Err(SyncplaneError::Conflict {
                             message: "replacement was not confirmed".into(),
                             hint: "rerun with `--replace --yes` when intentional".into(),
                         });
                     }
                 } else {
-                    return Err(McpdError::InvalidInput {
+                    return Err(SyncplaneError::InvalidInput {
                         message: "--replace requires --yes in non-interactive use".into(),
                         hint: "review the semantic diff, then rerun with `--replace --yes`".into(),
                     });
@@ -799,7 +803,7 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 message(
                     &cli,
                     format!(
-                        "installed user service {}\nRun `systemctl --user enable --now mcpd-watch.service` to start it.",
+                        "installed user service {}\nRun `systemctl --user enable --now syncplane-watch.service` to start it.",
                         path.display()
                     ),
                 )
@@ -810,9 +814,9 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
                 message(
                     &cli,
                     if removed {
-                        "uninstalled mcpd user service".into()
+                        "uninstalled syncplane user service".into()
                     } else {
-                        "mcpd user service is not installed".into()
+                        "syncplane user service is not installed".into()
                     },
                 )
             }
@@ -833,10 +837,15 @@ pub fn run(cli: Cli, paths: Paths) -> Result<()> {
             }
         },
         Command::Completions { shell } => {
-            clap_complete::generate(*shell, &mut Cli::command(), "mcpd", &mut std::io::stdout());
+            clap_complete::generate(
+                *shell,
+                &mut Cli::command(),
+                "syncplane",
+                &mut std::io::stdout(),
+            );
             Ok(())
         }
-        Command::Version => message(&cli, format!("mcpd {}", env!("CARGO_PKG_VERSION"))),
+        Command::Version => message(&cli, format!("syncplane {}", env!("CARGO_PKG_VERSION"))),
     }
 }
 
@@ -856,7 +865,7 @@ fn run_secret_command(cli: &Cli, command: &SecretCommand, paths: &Paths) -> Resu
                 Ok(())
             } else {
                 if names.is_empty() {
-                    println!("No mcpd secrets registered.");
+                    println!("No syncplane secrets registered.");
                 }
                 for name in names {
                     println!("{name}");
@@ -866,39 +875,43 @@ fn run_secret_command(cli: &Cli, command: &SecretCommand, paths: &Paths) -> Resu
         }
         SecretCommand::Delete { name } => {
             if !store.delete(name)? {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!("secret `{name}` does not exist"),
-                    hint: "run `mcpd secret list` to see registered secret names".into(),
+                    hint: "run `syncplane secret list` to see registered secret names".into(),
                 });
             }
             message(cli, format!("deleted secret `{name}` from the OS keyring"))
         }
         SecretCommand::Check { name } => {
             if !store.contains(name)? {
-                return Err(McpdError::Operational {
+                return Err(SyncplaneError::Operational {
                     message: format!("secret `{name}` is missing"),
-                    hint: format!("run `mcpd secret set {name}`"),
+                    hint: format!("run `syncplane secret set {name}`"),
                 });
             }
             message(cli, format!("secret `{name}` is present"))
         }
         SecretCommand::Get { name, reveal } => {
             if !reveal {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!("refusing to reveal secret `{name}` without `--reveal`"),
-                    hint: format!("run `mcpd secret get {name} --reveal` only in a safe terminal"),
+                    hint: format!(
+                        "run `syncplane secret get {name} --reveal` only in a safe terminal"
+                    ),
                 });
             }
             if cli.json || cli.quiet {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: "secret reveal is unavailable with --json or --quiet".into(),
                     hint: "run the explicit reveal command without machine-output flags".into(),
                 });
             }
-            let value = store.get(name)?.ok_or_else(|| McpdError::InvalidInput {
-                message: format!("secret `{name}` does not exist"),
-                hint: "run `mcpd secret list` to see registered secret names".into(),
-            })?;
+            let value = store
+                .get(name)?
+                .ok_or_else(|| SyncplaneError::InvalidInput {
+                    message: format!("secret `{name}` does not exist"),
+                    hint: "run `syncplane secret list` to see registered secret names".into(),
+                })?;
             eprintln!(
                 "Warning: revealing `{name}` may expose it in terminal scrollback or captured output."
             );
@@ -1283,12 +1296,12 @@ fn run_trust_command(cli: &Cli, command: &TrustCommand, paths: &Paths) -> Result
     }
     let project = match &command.path {
         Some(path) => path.clone(),
-        None => {
-            crate::resolve::discover_project_root()?.ok_or_else(|| McpdError::InvalidInput {
+        None => crate::resolve::discover_project_root()?.ok_or_else(|| {
+            SyncplaneError::InvalidInput {
                 message: "could not find a project from the current directory".into(),
-                hint: "run inside a repository or pass `mcpd trust PATH`".into(),
-            })?
-        }
+                hint: "run inside a repository or pass `syncplane trust PATH`".into(),
+            }
+        })?,
     };
     let project = crate::resolve::trust(paths, &project)?;
     message(cli, format!("trusted project {}", project.display()))
@@ -1359,7 +1372,11 @@ fn render_onboard_report(cli: &Cli, report: &crate::onboard::OnboardReport) -> R
     }
     println!(
         "{} onboarding review",
-        if report.dry_run { "Dry-run" } else { "mcpd" }
+        if report.dry_run {
+            "Dry-run"
+        } else {
+            "syncplane"
+        }
     );
     let rows = report
         .entries
@@ -1437,20 +1454,20 @@ fn add_server(command: &AddCommand) -> Result<Server> {
     match command.transport {
         Transport::Stdio => {
             if let Some(unexpected) = &command.url {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: format!(
                         "unexpected positional value `{unexpected}` before the stdio command"
                     ),
-                    hint: "use `mcpd add SERVER_ID [--no-sync] -- COMMAND [ARG ...]`".into(),
+                    hint: "use `syncplane add SERVER_ID [--no-sync] -- COMMAND [ARG ...]`".into(),
                 });
             }
             let (program, args) =
                 command
                     .command
                     .split_first()
-                    .ok_or_else(|| McpdError::InvalidInput {
+                    .ok_or_else(|| SyncplaneError::InvalidInput {
                         message: "stdio servers require a command after `--`".into(),
-                        hint: "use `mcpd add SERVER_ID -- COMMAND [ARG ...]`".into(),
+                        hint: "use `syncplane add SERVER_ID -- COMMAND [ARG ...]`".into(),
                     })?;
             Ok(Server::Stdio {
                 command: program.clone(),
@@ -1462,19 +1479,19 @@ fn add_server(command: &AddCommand) -> Result<Server> {
         }
         Transport::Http => {
             if !command.command.is_empty() {
-                return Err(McpdError::InvalidInput {
+                return Err(SyncplaneError::InvalidInput {
                     message: "HTTP servers do not accept a command after `--`".into(),
-                    hint: "use `mcpd add NAME --transport http URL`".into(),
+                    hint: "use `syncplane add NAME --transport http URL`".into(),
                 });
             }
             let value = command
                 .url
                 .as_deref()
-                .ok_or_else(|| McpdError::InvalidInput {
+                .ok_or_else(|| SyncplaneError::InvalidInput {
                     message: "HTTP servers require exactly one URL".into(),
-                    hint: "use `mcpd add NAME --transport http URL`".into(),
+                    hint: "use `syncplane add NAME --transport http URL`".into(),
                 })?;
-            let url = Url::parse(value).map_err(|error| McpdError::InvalidInput {
+            let url = Url::parse(value).map_err(|error| SyncplaneError::InvalidInput {
                 message: format!("invalid HTTP server URL: {error}"),
                 hint: "use an absolute http:// or https:// URL".into(),
             })?;
@@ -1591,7 +1608,7 @@ fn render_removal_safety(safety: &RemovalSafetyOutput) {
             eprintln!("  REMOVE {}: {}", removal.display_name, removal.server);
         }
         eprintln!(
-            "These removals are blocked by default; use `mcpd sync --allow-removals` only after verifying every entry."
+            "These removals are blocked by default; use `syncplane sync --allow-removals` only after verifying every entry."
         );
     }
 }
@@ -1798,7 +1815,7 @@ fn render_diff_matrix(
                 .map(|change| change.server.clone()),
         );
         servers.extend(plan.inventory.only_in_target.iter().cloned());
-        servers.extend(plan.inventory.only_in_mcpd.iter().cloned());
+        servers.extend(plan.inventory.only_in_syncplane.iter().cloned());
     }
     let mut headers = vec!["Server".to_owned()];
     headers.extend(
@@ -1829,7 +1846,7 @@ fn render_diff_matrix(
                     "~ drifted"
                 } else if plan.inventory.only_in_target.contains(&server) {
                     "+ unmanaged"
-                } else if plan.inventory.only_in_mcpd.contains(&server) {
+                } else if plan.inventory.only_in_syncplane.contains(&server) {
                     "- missing"
                 } else {
                     "—"

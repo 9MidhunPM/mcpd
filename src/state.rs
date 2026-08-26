@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     sync::fs::atomic_write,
 };
 
@@ -58,19 +58,22 @@ pub fn load(path: &Path) -> Result<StateFile> {
     if !path.exists() {
         return Ok(StateFile::default());
     }
-    let text = fs::read_to_string(path).map_err(|source| McpdError::io(path, source))?;
-    let mut state: StateFile = toml::from_str(&text).map_err(|error| McpdError::InvalidInput {
-        message: format!("ownership state {} is malformed: {error}", path.display()),
-        hint: "restore the state file from a known-good copy; mcpd will not guess ownership".into(),
-    })?;
+    let text = fs::read_to_string(path).map_err(|source| SyncplaneError::io(path, source))?;
+    let mut state: StateFile =
+        toml::from_str(&text).map_err(|error| SyncplaneError::InvalidInput {
+            message: format!("ownership state {} is malformed: {error}", path.display()),
+            hint:
+                "restore the state file from a known-good copy; syncplane will not guess ownership"
+                    .into(),
+        })?;
     if state.version != 1 {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "ownership state {} uses unsupported version {}",
                 path.display(),
                 state.version
             ),
-            hint: "use a compatible mcpd release or migrate the state explicitly".into(),
+            hint: "use a compatible syncplane release or migrate the state explicitly".into(),
         });
     }
     if !state.targets.contains_key("opencode") {
@@ -82,9 +85,9 @@ pub fn load(path: &Path) -> Result<StateFile> {
 }
 
 pub fn save(path: &Path, state: &StateFile) -> Result<()> {
-    let text = toml::to_string_pretty(state).map_err(|error| McpdError::Operational {
+    let text = toml::to_string_pretty(state).map_err(|error| SyncplaneError::Operational {
         message: format!("could not serialize ownership state: {error}"),
-        hint: "report this as an mcpd bug".into(),
+        hint: "report this as a Syncplane bug".into(),
     })?;
     atomic_write(path, text.as_bytes(), Some(0o600))
 }

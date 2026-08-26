@@ -1,0 +1,25 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from './Nav.astro';
+import Footer from './Footer.astro';
+interface Props { title: string; description?: string }
+const { title, description } = Astro.props;
+---
+<Base title={`${title} — Syncplane`} description={description}>
+  <Nav />
+  <main id="main" class="docs-shell">
+    <aside class="docs-nav" aria-label="Documentation navigation">
+      <a href="/docs/getting-started/">Getting started</a>
+      <a href="/docs/how-it-works/">How it works</a>
+      <a href="/docs/safety/">Safety model</a>
+      <a href="/install/">Install</a>
+      <a href="/security/">Security</a>
+    </aside>
+    <article class="docs-content">
+      <p class="plate-label">Syncplane documentation</p>
+      <h1>{title}</h1>
+      <slot />
+    </article>
+  </main>
+  <Footer />
+</Base>

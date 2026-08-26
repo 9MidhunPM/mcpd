@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Paths, config,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     model::Server,
     state::{self, TargetState},
     sync::{self, fs::hash_bytes},
@@ -85,9 +85,9 @@ pub fn import_target(
         }
         verify_target_snapshot(&prepared)?;
         let current_canonical =
-            fs::read(&paths.config).map_err(|source| McpdError::io(&paths.config, source))?;
+            fs::read(&paths.config).map_err(|source| SyncplaneError::io(&paths.config, source))?;
         if current_canonical != prepared.canonical.before {
-            return Err(McpdError::Conflict {
+            return Err(SyncplaneError::Conflict {
                 message: format!(
                     "{} changed after import was planned",
                     paths.config.display()
@@ -133,12 +133,12 @@ fn validate_secret_destinations(
             None => retained.push(write),
             Some(existing) if existing.expose() == write.value.expose() => retained.push(write),
             Some(_) => {
-                return Err(McpdError::Conflict {
+                return Err(SyncplaneError::Conflict {
                     message: format!(
                         "keyring secret `{}` already exists with a different value",
                         write.name
                     ),
-                    hint: "choose a different keyring name; mcpd import never overwrites an existing secret"
+                    hint: "choose a different keyring name; syncplane import never overwrites an existing secret"
                         .into(),
                 });
             }
@@ -174,7 +174,7 @@ fn prepare(
     let mut skipped = Vec::new();
     for name in selected {
         let reason = if previously_managed.is_some_and(|managed| managed.contains_key(&name)) {
-            Some("already managed by mcpd".to_owned())
+            Some("already managed by syncplane".to_owned())
         } else if canonical_before.servers.contains_key(&name) {
             Some(format!("already exists in {}", paths.config.display()))
         } else {
@@ -182,7 +182,7 @@ fn prepare(
         };
         if let Some(reason) = reason {
             if !bulk || strict {
-                return Err(McpdError::Conflict {
+                return Err(SyncplaneError::Conflict {
                     message: format!("server `{name}` {reason}"),
                     hint: "keep the target entry unmanaged or remove/rename the canonical entry explicitly"
                         .into(),
@@ -347,13 +347,13 @@ fn confirm_secret_migrations(
         eprint!("\nStore securely in the OS keyring? [Y/n] ");
         io::stderr()
             .flush()
-            .map_err(|source| McpdError::io("<terminal>", source))?;
+            .map_err(|source| SyncplaneError::io("<terminal>", source))?;
         let mut answer = String::new();
         io::stdin()
             .read_line(&mut answer)
-            .map_err(|source| McpdError::io("<terminal>", source))?;
+            .map_err(|source| SyncplaneError::io("<terminal>", source))?;
         if matches!(answer.trim().to_ascii_lowercase().as_str(), "n" | "no") {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("secure secret migration for `{server}` was declined"),
                 hint: "no canonical configuration or keyring entries were modified".into(),
             });
@@ -391,9 +391,9 @@ fn mapping_key(server: &str, field: &str) -> String {
 
 fn verify_target_snapshot(prepared: &PreparedImport) -> Result<()> {
     let current = fs::read(&prepared.target_path)
-        .map_err(|source| McpdError::io(&prepared.target_path, source))?;
+        .map_err(|source| SyncplaneError::io(&prepared.target_path, source))?;
     if current != prepared.target_snapshot {
-        return Err(McpdError::Conflict {
+        return Err(SyncplaneError::Conflict {
             message: format!(
                 "{} changed after import was planned",
                 prepared.target_path.display()
@@ -409,9 +409,9 @@ fn pending_path(paths: &Paths) -> PathBuf {
 }
 
 fn save_pending(paths: &Paths, pending: &PendingImport) -> Result<()> {
-    let text = toml::to_string_pretty(pending).map_err(|error| McpdError::Operational {
+    let text = toml::to_string_pretty(pending).map_err(|error| SyncplaneError::Operational {
         message: format!("could not serialize pending import transaction: {error}"),
-        hint: "report this as an mcpd bug".into(),
+        hint: "report this as a Syncplane bug".into(),
     })?;
     sync::fs::atomic_write(&pending_path(paths), text.as_bytes(), Some(0o600))
 }
@@ -421,7 +421,7 @@ fn remove_pending(paths: &Paths) -> Result<()> {
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(McpdError::io(path, source)),
+        Err(source) => Err(SyncplaneError::io(path, source)),
     }
 }
 
@@ -437,9 +437,9 @@ pub(crate) fn recover_pending(paths: &Paths) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let text = fs::read_to_string(&path).map_err(|source| McpdError::io(&path, source))?;
+    let text = fs::read_to_string(&path).map_err(|source| SyncplaneError::io(&path, source))?;
     let pending: PendingImport =
-        toml::from_str(&text).map_err(|error| McpdError::InvalidInput {
+        toml::from_str(&text).map_err(|error| SyncplaneError::InvalidInput {
             message: format!(
                 "pending import transaction {} is malformed: {error}",
                 path.display()
@@ -447,22 +447,22 @@ pub(crate) fn recover_pending(paths: &Paths) -> Result<()> {
             hint: "inspect canonical config and ownership state before removing it manually".into(),
         })?;
     if pending.version != 1 {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: "unsupported pending import transaction record".into(),
-            hint: "use a compatible mcpd version".into(),
+            hint: "use a compatible syncplane version".into(),
         });
     }
     let target = fs::read(&pending.target_path)
-        .map_err(|source| McpdError::io(&pending.target_path, source))?;
+        .map_err(|source| SyncplaneError::io(&pending.target_path, source))?;
     if hash_bytes(&target) != pending.target_hash {
-        return Err(McpdError::Conflict {
+        return Err(SyncplaneError::Conflict {
             message: format!("{} changed during import recovery", pending.target_path.display()),
-            hint: "inspect the target, canonical config, and ownership state; mcpd will not guess ownership"
+            hint: "inspect the target, canonical config, and ownership state; syncplane will not guess ownership"
                 .into(),
         });
     }
     let canonical =
-        fs::read(&paths.config).map_err(|source| McpdError::io(&paths.config, source))?;
+        fs::read(&paths.config).map_err(|source| SyncplaneError::io(&paths.config, source))?;
     let canonical_hash = hash_bytes(&canonical);
     if canonical_hash == pending.canonical_desired_hash {
         commit_state(paths, &pending.target, pending.next_state)?;
@@ -470,10 +470,11 @@ pub(crate) fn recover_pending(paths: &Paths) -> Result<()> {
     } else if canonical_hash == pending.canonical_pre_hash {
         remove_pending(paths)
     } else {
-        Err(McpdError::Conflict {
+        Err(SyncplaneError::Conflict {
             message: format!("{} changed during import recovery", paths.config.display()),
-            hint: "inspect canonical config and ownership state; mcpd will not guess ownership"
-                .into(),
+            hint:
+                "inspect canonical config and ownership state; syncplane will not guess ownership"
+                    .into(),
         })
     }
 }

@@ -23,8 +23,8 @@ impl TestEnvironment {
         let temp = TempDir::new().unwrap();
         let home = temp.path().join("home");
         Self {
-            config: temp.path().join("xdg-config/mcpd/config.toml"),
-            state: temp.path().join("xdg-state/mcpd"),
+            config: temp.path().join("xdg-config/syncplane/config.toml"),
+            state: temp.path().join("xdg-state/syncplane"),
             codex: home.join(".codex/config.toml"),
             home,
             _temp: temp,
@@ -32,7 +32,7 @@ impl TestEnvironment {
     }
 
     fn command(&self) -> Command {
-        let mut command = Command::cargo_bin("mcpd").unwrap();
+        let mut command = Command::cargo_bin("syncplane").unwrap();
         command
             .env("HOME", &self.home)
             .env(
@@ -40,11 +40,11 @@ impl TestEnvironment {
                 self.config.parent().unwrap().parent().unwrap(),
             )
             .env("XDG_STATE_HOME", self.state.parent().unwrap())
-            .env("MCPD_HOME", &self.home)
-            .env("MCPD_CONFIG", &self.config)
-            .env("MCPD_STATE_DIR", &self.state)
-            .env("MCPD_CODEX_CONFIG", &self.codex);
-        command.env("MCPD_SECRET_BACKEND", "mock-file");
+            .env("SYNCPLANE_HOME", &self.home)
+            .env("SYNCPLANE_CONFIG", &self.config)
+            .env("SYNCPLANE_STATE_DIR", &self.state)
+            .env("SYNCPLANE_CODEX_CONFIG", &self.codex);
+        command.env("SYNCPLANE_SECRET_BACKEND", "mock-file");
         command
     }
 
@@ -137,7 +137,7 @@ fn snapshot_tree(root: &Path) -> BTreeMap<PathBuf, SnapshotEntry> {
 
 fn project_command(environment: &TestEnvironment, project: &Path) -> Command {
     let mut command = environment.command();
-    command.env("MCPD_PROJECT_ROOT", project);
+    command.env("SYNCPLANE_PROJECT_ROOT", project);
     command
 }
 
@@ -362,9 +362,9 @@ fn project_overlays_are_ignored_until_trusted_and_can_be_revoked() {
     environment.add_context7_no_sync();
     let project = environment.root().join("project");
     fs::create_dir_all(project.join(".git")).unwrap();
-    fs::create_dir_all(project.join(".mcpd")).unwrap();
+    fs::create_dir_all(project.join(".syncplane")).unwrap();
     fs::write(
-        project.join(".mcpd/config.toml"),
+        project.join(".syncplane/config.toml"),
         r#"
 version = 1
 
@@ -429,7 +429,7 @@ fn project_overlay_symlinks_are_rejected_without_following_them() {
     environment.add_context7_no_sync();
     let project = environment.root().join("project-symlink");
     fs::create_dir_all(project.join(".git")).unwrap();
-    fs::create_dir_all(project.join(".mcpd")).unwrap();
+    fs::create_dir_all(project.join(".syncplane")).unwrap();
     let outside = environment.root().join("outside-overlay.toml");
     fs::write(
         &outside,
@@ -440,7 +440,7 @@ fn project_overlay_symlinks_are_rejected_without_following_them() {
         .arg("trust")
         .assert()
         .success();
-    symlink(&outside, project.join(".mcpd/config.toml")).unwrap();
+    symlink(&outside, project.join(".syncplane/config.toml")).unwrap();
     let canonical_before = fs::read(&environment.config).unwrap();
     let outside_before = fs::read(&outside).unwrap();
 
@@ -610,7 +610,7 @@ fn targets_completions_get_and_version_cover_the_v1_command_surface() {
         .args(["completions", "bash"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("_mcpd"));
+        .stdout(predicate::str::contains("_syncplane"));
     environment
         .command()
         .args(["systemd", "generate"])
@@ -624,7 +624,7 @@ fn targets_completions_get_and_version_cover_the_v1_command_surface() {
         .arg("version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("mcpd 1.0.0"));
+        .stdout(predicate::str::contains("syncplane 1.0.0"));
     for command in ["status", "diff", "sync", "doctor"] {
         environment
             .command()
@@ -1784,7 +1784,7 @@ fn repeated_bulk_import_skips_managed_entries_without_writes() {
         .success()
         .stdout(predicate::str::contains("! skipped"))
         .stdout(predicate::str::contains("github"))
-        .stdout(predicate::str::contains("already managed by mcpd"));
+        .stdout(predicate::str::contains("already managed by syncplane"));
 
     assert_eq!(snapshot_tree(environment.root()), before);
 }
@@ -1917,7 +1917,7 @@ enabled = true
 
     environment.command().arg("sync").assert().success();
     let target = fs::read_to_string(&environment.codex).unwrap();
-    assert!(target.contains("command = \"mcpd\""));
+    assert!(target.contains("command = \"syncplane\""));
     assert!(target.contains("args = [\"exec\", \"secure\"]"));
     assert!(!target.contains("runtime-only-canary"));
     assert!(
@@ -1968,7 +1968,7 @@ enabled = true
     environment.command().arg("sync").assert().success();
     environment.write_codex(
         r#"[mcp_servers.secure]
-command = "mcpd"
+command = "syncplane"
 args = ["exec", "secure"]
 "#,
     );
@@ -1981,7 +1981,7 @@ args = ["exec", "secure"]
         .stdout(predicate::str::contains("Codex"))
         .stdout(predicate::str::contains("! invalid"))
         .stdout(predicate::str::contains("DBUS_SESSION_BUS_ADDRESS"))
-        .stdout(predicate::str::contains("mcpd sync --target codex"));
+        .stdout(predicate::str::contains("syncplane sync --target codex"));
     environment
         .command()
         .args(["doctor", "--target", "codex", "--json"])
@@ -2052,13 +2052,13 @@ enabled = true
             "active OpenCode config: {}",
             jsonc.display()
         )))
-        .stderr(predicate::str::contains("ignored by mcpd"));
+        .stderr(predicate::str::contains("ignored by syncplane"));
     environment
         .command()
         .args(["sync", "--target", "opencode"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("ignored by mcpd"));
+        .stderr(predicate::str::contains("ignored by syncplane"));
 
     let rendered = fs::read_to_string(&jsonc).unwrap();
     assert!(rendered.contains("// active config"));
@@ -2150,7 +2150,7 @@ fn import_uses_deterministic_secret_name_and_preserves_non_sensitive_literals() 
     environment.enable_codex();
     environment.command().arg("sync").assert().success();
     let target = fs::read_to_string(&environment.codex).unwrap();
-    assert!(target.contains("command = \"mcpd\""));
+    assert!(target.contains("command = \"syncplane\""));
     assert!(!target.contains("import-secret-canary"));
 }
 

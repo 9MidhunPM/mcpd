@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     model::{CanonicalConfig, ConfigValue, Server},
     state::{ManagedServer, TargetState},
     sync::fs::{ensure_safe_target_path, hash_bytes},
@@ -67,11 +67,11 @@ pub fn discover(paths: &Paths) -> Result<Vec<DeclarativeAdapter>> {
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => return Err(McpdError::io(&directory, source)),
+        Err(source) => return Err(SyncplaneError::io(&directory, source)),
     };
     let mut manifests = entries
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|source| McpdError::io(&directory, source))?;
+        .map_err(|source| SyncplaneError::io(&directory, source))?;
     manifests.sort_by_key(std::fs::DirEntry::file_name);
     let mut adapters = Vec::new();
     let mut ids = BTreeSet::new();
@@ -81,9 +81,9 @@ pub fn discover(paths: &Paths) -> Result<Vec<DeclarativeAdapter>> {
             continue;
         }
         let text = fs::read_to_string(&manifest_path)
-            .map_err(|source| McpdError::io(&manifest_path, source))?;
+            .map_err(|source| SyncplaneError::io(&manifest_path, source))?;
         let manifest: Manifest =
-            toml::from_str(&text).map_err(|error| McpdError::InvalidInput {
+            toml::from_str(&text).map_err(|error| SyncplaneError::InvalidInput {
                 message: format!(
                     "declarative target manifest {} is invalid: {error}",
                     manifest_path.display()
@@ -94,7 +94,7 @@ pub fn discover(paths: &Paths) -> Result<Vec<DeclarativeAdapter>> {
         if crate::targets::TARGET_IDS.contains(&manifest.id.as_str())
             || !ids.insert(manifest.id.clone())
         {
-            return Err(McpdError::Conflict {
+            return Err(SyncplaneError::Conflict {
                 message: format!(
                     "duplicate target ID `{}` in {}",
                     manifest.id,
@@ -129,7 +129,7 @@ pub fn discover(paths: &Paths) -> Result<Vec<DeclarativeAdapter>> {
 
 fn validate_manifest(manifest: &Manifest, path: &Path) -> Result<()> {
     if !crate::config::is_valid_server_id(&manifest.id) {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "declarative target ID `{}` in {} is invalid",
                 manifest.id,
@@ -141,13 +141,13 @@ fn validate_manifest(manifest: &Manifest, path: &Path) -> Result<()> {
         });
     }
     if manifest.name.trim().is_empty() {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!("declarative target `{}` has an empty name", manifest.id),
             hint: "set a human-readable target name".into(),
         });
     }
     if !matches!(manifest.config.format.as_str(), "json" | "jsonc") {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "declarative target `{}` uses unsupported format `{}`",
                 manifest.id, manifest.config.format
@@ -156,7 +156,7 @@ fn validate_manifest(manifest: &Manifest, path: &Path) -> Result<()> {
         });
     }
     if manifest.config.servers_path.split('.').any(str::is_empty) {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "declarative target `{}` has an invalid servers_path",
                 manifest.id
@@ -170,7 +170,7 @@ fn validate_manifest(manifest: &Manifest, path: &Path) -> Result<()> {
         .iter()
         .any(|command| command.trim().is_empty())
     {
-        return Err(McpdError::InvalidInput {
+        return Err(SyncplaneError::InvalidInput {
             message: format!(
                 "declarative target `{}` has an empty detection command",
                 manifest.id
@@ -194,7 +194,7 @@ fn expand_path(value: &str, home: &Path, manifest: &Path) -> Result<PathBuf> {
             .components()
             .any(|component| component == Component::ParentDir)
     {
-        return Err(McpdError::Security {
+        return Err(SyncplaneError::Security {
             path: manifest.to_path_buf(),
             message: format!("declarative target path `{value}` is not a safe absolute/home path"),
             hint: "use `~/...` or an absolute path below the user home directory without `..`"
@@ -212,7 +212,7 @@ impl DeclarativeAdapter {
             Ok(bytes) => {
                 let (_, value) = super::jsonc::parse(&bytes, &self.name, &self.path)?;
                 if !value.is_object() {
-                    return Err(McpdError::InvalidInput {
+                    return Err(SyncplaneError::InvalidInput {
                         message: format!("{} configuration root must be an object", self.name),
                         hint: "repair the target configuration before syncing".into(),
                     });
@@ -223,13 +223,13 @@ impl DeclarativeAdapter {
                 Ok((None, json!({})))
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Err(McpdError::TargetUnavailable {
+                Err(SyncplaneError::TargetUnavailable {
                     target: self.id.clone(),
                     message: format!("configuration {} does not exist", self.path.display()),
                     hint: "create or synchronize the target before importing".into(),
                 })
             }
-            Err(source) => Err(McpdError::io(&self.path, source)),
+            Err(source) => Err(SyncplaneError::io(&self.path, source)),
         }
     }
 
@@ -240,10 +240,12 @@ impl DeclarativeAdapter {
             .try_fold(document, |value, key| value.get(key));
         value
             .map(|value| {
-                value.as_object().ok_or_else(|| McpdError::InvalidInput {
-                    message: format!("{} MCP server collection must be an object", self.name),
-                    hint: "repair the declarative target configuration before syncing".into(),
-                })
+                value
+                    .as_object()
+                    .ok_or_else(|| SyncplaneError::InvalidInput {
+                        message: format!("{} MCP server collection must be an object", self.name),
+                        hint: "repair the declarative target configuration before syncing".into(),
+                    })
             })
             .transpose()
     }
@@ -251,7 +253,7 @@ impl DeclarativeAdapter {
     fn servers_mut<'a>(&self, document: &'a mut Value) -> Result<&'a mut Map<String, Value>> {
         let mut current = document
             .as_object_mut()
-            .ok_or_else(|| McpdError::InvalidInput {
+            .ok_or_else(|| SyncplaneError::InvalidInput {
                 message: format!("{} configuration root must be an object", self.name),
                 hint: "repair the target configuration before syncing".into(),
             })?;
@@ -260,7 +262,7 @@ impl DeclarativeAdapter {
                 .entry(key)
                 .or_insert_with(|| json!({}))
                 .as_object_mut()
-                .ok_or_else(|| McpdError::InvalidInput {
+                .ok_or_else(|| SyncplaneError::InvalidInput {
                     message: format!("{} path component `{key}` must be an object", self.name),
                     hint: "repair the target configuration before syncing".into(),
                 })?;
@@ -283,7 +285,7 @@ impl DeclarativeAdapter {
                             || matches!(value, ConfigValue::Literal(value) if value.starts_with("${env:"))
                     })
                 {
-                    return Ok(json!({"command":"mcpd", "args":["exec", name]}));
+                    return Ok(json!({"command":"syncplane", "args":["exec", name]}));
                 }
                 let mut rendered = Map::from_iter([("command".into(), json!(command))]);
                 if !args.is_empty() {
@@ -294,10 +296,10 @@ impl DeclarativeAdapter {
                         .iter()
                         .map(|(key, value)| match value {
                             ConfigValue::Literal(value) => Ok((key.clone(), json!(value))),
-                            ConfigValue::Secret { .. } => Err(McpdError::Operational {
+                            ConfigValue::Secret { .. } => Err(SyncplaneError::Operational {
                                 message: "secret reference escaped declarative wrapper planning"
                                     .into(),
-                                hint: "report this as an mcpd bug".into(),
+                                hint: "report this as a Syncplane bug".into(),
                             }),
                         })
                         .collect::<Result<Map<_, _>>>()?;
@@ -319,7 +321,7 @@ impl DeclarativeAdapter {
                             || matches!(value, ConfigValue::Literal(value) if value.starts_with("${env:"))
                     })
                 {
-                    return Err(McpdError::InvalidInput {
+                    return Err(SyncplaneError::InvalidInput {
                         message: format!(
                             "{} cannot safely represent secret/environment-backed HTTP server `{name}`",
                             self.name
@@ -333,10 +335,10 @@ impl DeclarativeAdapter {
                         .iter()
                         .map(|(key, value)| match value {
                             ConfigValue::Literal(value) => Ok((key.clone(), json!(value))),
-                            ConfigValue::Secret { .. } => Err(McpdError::Operational {
+                            ConfigValue::Secret { .. } => Err(SyncplaneError::Operational {
                                 message: "secret reference escaped declarative HTTP validation"
                                     .into(),
-                                hint: "report this as an mcpd bug".into(),
+                                hint: "report this as a Syncplane bug".into(),
                             }),
                         })
                         .collect::<Result<Map<_, _>>>()?;
@@ -406,7 +408,7 @@ impl TargetAdapter for DeclarativeAdapter {
         _secret_mappings: &BTreeMap<String, String>,
         _mode: ImportMode,
     ) -> Result<TargetImport> {
-        Err(McpdError::TargetUnavailable {
+        Err(SyncplaneError::TargetUnavailable {
             target: self.id.clone(),
             message: "v1 declarative adapters are export-only".into(),
             hint:
@@ -421,7 +423,7 @@ impl TargetAdapter for DeclarativeAdapter {
         previous: Option<&TargetState>,
     ) -> Result<TargetPlan> {
         if !self.platform_supported {
-            return Err(McpdError::TargetUnavailable {
+            return Err(SyncplaneError::TargetUnavailable {
                 target: self.id.clone(),
                 message: format!(
                     "the manifest does not support platform `{}`",
@@ -460,10 +462,10 @@ impl TargetAdapter for DeclarativeAdapter {
             let rendered_hash = hash_value(&rendered)?;
             match current.get(&name) {
                 Some(_) if !owned.contains_key(&name) => {
-                    return Err(McpdError::Conflict {
+                    return Err(SyncplaneError::Conflict {
                         message: format!("{} already has unmanaged MCP server `{name}`", self.name),
                         hint: format!(
-                            "run `mcpd adopt {} {name}` when it matches canonical state",
+                            "run `syncplane adopt {} {name}` when it matches canonical state",
                             self.id
                         ),
                     });
@@ -516,7 +518,7 @@ impl TargetAdapter for DeclarativeAdapter {
             .filter(|name| !owned.contains_key(*name) && !desired.servers.contains_key(*name))
             .cloned()
             .collect();
-        inventory.only_in_mcpd = desired
+        inventory.only_in_syncplane = desired
             .servers
             .keys()
             .filter(|name| !current.contains_key(*name) && !owned.contains_key(*name))
@@ -526,7 +528,7 @@ impl TargetAdapter for DeclarativeAdapter {
         let rendered = if changes.is_empty() {
             before.clone().unwrap_or_default()
         } else if let Some(source) = before.as_deref() {
-            let source = std::str::from_utf8(source).map_err(|_| McpdError::InvalidInput {
+            let source = std::str::from_utf8(source).map_err(|_| SyncplaneError::InvalidInput {
                 message: format!("{} is not UTF-8", self.path.display()),
                 hint: "repair the target configuration before syncing".into(),
             })?;
@@ -549,9 +551,9 @@ impl TargetAdapter for DeclarativeAdapter {
                 &removed,
             )?
         } else {
-            serde_json::to_vec_pretty(&document).map_err(|error| McpdError::Operational {
+            serde_json::to_vec_pretty(&document).map_err(|error| SyncplaneError::Operational {
                 message: format!("could not serialize {} configuration: {error}", self.name),
-                hint: "report this as an mcpd bug".into(),
+                hint: "report this as a Syncplane bug".into(),
             })?
         };
         let next_state = TargetState {
@@ -580,17 +582,17 @@ impl TargetAdapter for DeclarativeAdapter {
 }
 
 fn hash_value(value: &Value) -> Result<String> {
-    let bytes = serde_json::to_vec(value).map_err(|error| McpdError::Operational {
+    let bytes = serde_json::to_vec(value).map_err(|error| SyncplaneError::Operational {
         message: format!("could not normalize declarative target value: {error}"),
-        hint: "report this as an mcpd bug".into(),
+        hint: "report this as a Syncplane bug".into(),
     })?;
     Ok(hash_bytes(&bytes))
 }
 
 fn hash_serializable(value: &impl serde::Serialize) -> Result<String> {
-    let bytes = serde_json::to_vec(value).map_err(|error| McpdError::Operational {
+    let bytes = serde_json::to_vec(value).map_err(|error| SyncplaneError::Operational {
         message: format!("could not normalize canonical server: {error}"),
-        hint: "report this as an mcpd bug".into(),
+        hint: "report this as a Syncplane bug".into(),
     })?;
     Ok(hash_bytes(&bytes))
 }

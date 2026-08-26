@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="820" viewBox="0 0 1400 820" role="img" aria-labelledby="title desc">
+  <title id="title">Syncplane status after a five-target isolated sync</title>
+  <desc id="desc">Terminal output reports one canonical server and five enabled targets, all synchronized.</desc>
+  <rect width="1400" height="820" fill="#171716"/>
+  <rect width="1400" height="76" fill="#2c2b29"/>
+  <circle cx="44" cy="38" r="10" fill="#ed3d32"/>
+  <text x="70" y="44" fill="#f2f0e8" font-family="Arial, sans-serif" font-size="22" letter-spacing="3">SYNCP LANE STATUS · ISOLATED FIXTURE</text>
+  <g fill="#f2f0e8" font-family="monospace" font-size="31">
+    <text x="65" y="150" fill="#f4d42e">$ syncplane status</text>
+    <text x="65" y="225">Overall: ✓ healthy — 1 canonical server(s), 5 enabled target(s)</text>
+    <text x="65" y="305">| Target      | Status   | Managed | Unmanaged | Pending |</text>
+    <text x="65" y="370">| Claude Code | ✓ synced | 1       | 0         | 0       |</text>
+    <text x="65" y="435">| Cursor      | ✓ synced | 1       | 0         | 0       |</text>
+    <text x="65" y="500">| Codex       | ✓ synced | 1       | 0         | 0       |</text>
+    <text x="65" y="565">| Antigravity | ✓ synced | 1       | 0         | 0       |</text>
+    <text x="65" y="630">| OpenCode    | ✓ synced | 1       | 0         | 0       |</text>
+  </g>
+  <text x="65" y="745" fill="#bbb9af" font-family="Arial, sans-serif" font-size="18" letter-spacing="2">CAPTURED FROM A TEMPORARY HOME/XDG FIXTURE · NO CLIENT OR SECRET DATA</text>
+</svg>

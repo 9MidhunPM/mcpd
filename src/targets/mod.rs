@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     model::{CanonicalConfig, Server},
     state::{ManagedServer, TargetState},
 };
@@ -37,7 +37,7 @@ pub struct TargetInventory {
     pub managed_synchronized: Vec<String>,
     pub managed_drift: Vec<Change>,
     pub only_in_target: Vec<String>,
-    pub only_in_mcpd: Vec<String>,
+    pub only_in_syncplane: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,7 +190,7 @@ pub fn adapter(id: &str, paths: &Paths) -> Result<Box<dyn TargetAdapter>> {
             .into_iter()
             .find(|adapter| adapter.id() == id)
             .map(|adapter| Box::new(adapter) as Box<dyn TargetAdapter>)
-            .ok_or_else(|| McpdError::TargetUnavailable {
+            .ok_or_else(|| SyncplaneError::TargetUnavailable {
                 target: id.into(),
                 message: "no built-in or declarative adapter is available".into(),
                 hint: format!(

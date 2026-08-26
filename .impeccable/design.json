@@ -1,0 +1,13 @@
+{
+  "northStar": "Registration Press",
+  "motion": {
+    "registration": "900ms cubic-bezier(.2,.8,.2,1)",
+    "targetPlate": "700ms cubic-bezier(.2,.8,.2,1)"
+  },
+  "breakpoints": { "mobile": "780px" },
+  "rules": [
+    "Use process color as registration evidence, never as the only state signal.",
+    "Keep ordinary surfaces flat; only product proof may use offset ink shadows.",
+    "Use real isolated CLI fixture output for terminal proof."
+  ]
+}

@@ -1,0 +1,12 @@
+---
+import DocsLayout from '../components/DocsLayout.astro';
+---
+<DocsLayout title="Security" description="Security boundaries and vulnerability reporting for Syncplane.">
+  <p class="lead">Syncplane configures programs that can launch local processes or contact remote MCP endpoints. Treat configuration as executable policy.</p>
+  <h2>Report privately</h2>
+  <p>Do not publish credentials, real secret-bearing configuration, or exploit details in public issues. Use GitHub private vulnerability reporting for the Syncplane repository when it is enabled; until then, contact the repository owner privately with a minimal, sanitized reproduction and affected version.</p>
+  <h2>Release integrity</h2>
+  <p>Official releases provide checksums and GitHub build provenance. Verify downloaded artifacts before installation; never run an installer from an untrusted mirror.</p>
+  <h2>Security boundaries</h2>
+  <p>Target paths are constrained, untrusted project overlays are ignored, malformed client files fail closed, and Syncplane never launches a client or MCP server during ordinary sync or diagnostics.</p>
+</DocsLayout>

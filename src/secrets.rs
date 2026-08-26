@@ -9,11 +9,11 @@ use zeroize::Zeroize;
 
 use crate::{
     Paths,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     sync,
 };
 
-const SERVICE: &str = "mcpd";
+const SERVICE: &str = "syncplane";
 
 pub struct SecretValue(String);
 
@@ -70,8 +70,8 @@ impl SecretBackend for OsKeyring {
     }
 }
 
-fn keyring_error(action: &str, name: &str, error: keyring::Error) -> McpdError {
-    McpdError::Operational {
+fn keyring_error(action: &str, name: &str, error: keyring::Error) -> SyncplaneError {
+    SyncplaneError::Operational {
         message: format!("could not {action} secret `{name}` in the OS keyring: {error}"),
         hint: "ensure a Secret Service or KWallet-compatible keyring is available and unlocked"
             .into(),
@@ -100,20 +100,20 @@ pub struct SecretRollback(Vec<(String, Option<SecretValue>)>);
 impl SecretStore {
     pub fn discover(paths: &Paths) -> Result<Self> {
         let backend: Box<dyn SecretBackend> =
-            match std::env::var("MCPD_SECRET_BACKEND").ok().as_deref() {
+            match std::env::var("SYNCPLANE_SECRET_BACKEND").ok().as_deref() {
                 Some("mock-file") if cfg!(debug_assertions) => Box::new(MockFileBackend {
                     path: paths.state_dir.join("test-secret-store.toml"),
                 }),
                 Some("mock-file") => {
-                    return Err(McpdError::Security {
+                    return Err(SyncplaneError::Security {
                         path: paths.state_dir.clone(),
                         message: "the mock secret backend is disabled in release builds".into(),
                         hint: "use the operating-system keyring".into(),
                     });
                 }
                 Some(value) => {
-                    return Err(McpdError::InvalidInput {
-                        message: format!("unsupported MCPD_SECRET_BACKEND `{value}`"),
+                    return Err(SyncplaneError::InvalidInput {
+                        message: format!("unsupported SYNCPLANE_SECRET_BACKEND `{value}`"),
                         hint: "unset it to use the operating-system keyring".into(),
                     });
                 }
@@ -141,7 +141,7 @@ impl SecretStore {
     pub fn set(&self, name: &str, value: SecretValue) -> Result<()> {
         validate_name(name)?;
         if value.expose().is_empty() {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("secret `{name}` cannot be empty"),
                 hint: "enter a non-empty value".into(),
             });
@@ -223,9 +223,9 @@ impl SecretStore {
             });
         }
         let text = fs::read_to_string(&self.registry_path)
-            .map_err(|source| McpdError::io(&self.registry_path, source))?;
+            .map_err(|source| SyncplaneError::io(&self.registry_path, source))?;
         let registry: Registry =
-            toml::from_str(&text).map_err(|error| McpdError::InvalidInput {
+            toml::from_str(&text).map_err(|error| SyncplaneError::InvalidInput {
                 message: format!(
                     "secret registry {} is malformed: {error}",
                     self.registry_path.display()
@@ -233,19 +233,20 @@ impl SecretStore {
                 hint: "repair the registry; it contains names only, never secret values".into(),
             })?;
         if registry.version != 1 {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("unsupported secret registry version {}", registry.version),
-                hint: "use a compatible mcpd release".into(),
+                hint: "use a compatible syncplane release".into(),
             });
         }
         Ok(registry)
     }
 
     fn save_registry(&self, registry: &Registry) -> Result<()> {
-        let text = toml::to_string_pretty(registry).map_err(|error| McpdError::Operational {
-            message: format!("could not serialize the secret-name registry: {error}"),
-            hint: "report this as an mcpd bug".into(),
-        })?;
+        let text =
+            toml::to_string_pretty(registry).map_err(|error| SyncplaneError::Operational {
+                message: format!("could not serialize the secret-name registry: {error}"),
+                hint: "report this as a Syncplane bug".into(),
+            })?;
         sync::fs::atomic_write(&self.registry_path, text.as_bytes(), Some(0o600))
     }
 }
@@ -259,14 +260,14 @@ fn restore(backend: &dyn SecretBackend, name: &str, previous: Option<SecretValue
 
 pub fn prompt_value(name: &str) -> Result<SecretValue> {
     if cfg!(debug_assertions)
-        && std::env::var("MCPD_SECRET_BACKEND").ok().as_deref() == Some("mock-file")
+        && std::env::var("SYNCPLANE_SECRET_BACKEND").ok().as_deref() == Some("mock-file")
     {
         use std::io::BufRead;
         let mut value = String::new();
         std::io::stdin()
             .lock()
             .read_line(&mut value)
-            .map_err(|source| McpdError::io("<test-stdin>", source))?;
+            .map_err(|source| SyncplaneError::io("<test-stdin>", source))?;
         while value.ends_with(['\n', '\r']) {
             value.pop();
         }
@@ -274,7 +275,7 @@ pub fn prompt_value(name: &str) -> Result<SecretValue> {
     }
     rpassword::prompt_password(format!("Enter secret `{name}`: "))
         .map(SecretValue::new)
-        .map_err(|source| McpdError::Io {
+        .map_err(|source| SyncplaneError::Io {
             path: PathBuf::from("<terminal>"),
             source,
         })
@@ -284,7 +285,7 @@ pub fn validate_name(name: &str) -> Result<()> {
     if crate::config::is_valid_server_id(name) {
         Ok(())
     } else {
-        Err(McpdError::InvalidInput {
+        Err(SyncplaneError::InvalidInput {
             message: format!("secret name `{name}` is invalid"),
             hint:
                 "use letters, digits, dots, underscores, or hyphens; start with a letter or digit"
@@ -335,17 +336,17 @@ impl MockFileBackend {
         if !self.path.exists() {
             return Ok(BTreeMap::new());
         }
-        let text =
-            fs::read_to_string(&self.path).map_err(|source| McpdError::io(&self.path, source))?;
-        toml::from_str(&text).map_err(|error| McpdError::Operational {
+        let text = fs::read_to_string(&self.path)
+            .map_err(|source| SyncplaneError::io(&self.path, source))?;
+        toml::from_str(&text).map_err(|error| SyncplaneError::Operational {
             message: format!("isolated test secret backend is malformed: {error}"),
             hint: "delete the isolated test directory and retry".into(),
         })
     }
     fn save(&self, values: &BTreeMap<String, String>) -> Result<()> {
-        let text = toml::to_string(values).map_err(|error| McpdError::Operational {
+        let text = toml::to_string(values).map_err(|error| SyncplaneError::Operational {
             message: format!("could not serialize isolated test secrets: {error}"),
-            hint: "report this as an mcpd bug".into(),
+            hint: "report this as a Syncplane bug".into(),
         })?;
         sync::fs::atomic_write(&self.path, text.as_bytes(), Some(0o600))
     }

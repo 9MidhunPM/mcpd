@@ -2,10 +2,10 @@ use std::{io, path::PathBuf};
 
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, McpdError>;
+pub type Result<T> = std::result::Result<T, SyncplaneError>;
 
 #[derive(Debug, Error)]
-pub enum McpdError {
+pub enum SyncplaneError {
     #[error("{message}")]
     InvalidInput { message: String, hint: String },
     #[error("{message}")]
@@ -32,7 +32,7 @@ pub enum McpdError {
     },
 }
 
-impl McpdError {
+impl SyncplaneError {
     pub fn hint(&self) -> Option<&str> {
         match self {
             Self::InvalidInput { hint, .. }
@@ -61,14 +61,14 @@ pub enum ExitCode {
     Security = 5,
 }
 
-impl From<&McpdError> for ExitCode {
-    fn from(value: &McpdError) -> Self {
+impl From<&SyncplaneError> for ExitCode {
+    fn from(value: &SyncplaneError) -> Self {
         match value {
-            McpdError::InvalidInput { .. } => Self::InvalidInput,
-            McpdError::TargetUnavailable { .. } => Self::TargetUnavailable,
-            McpdError::Conflict { .. } => Self::Conflict,
-            McpdError::Security { .. } => Self::Security,
-            McpdError::Operational { .. } | McpdError::Io { .. } => Self::Operational,
+            SyncplaneError::InvalidInput { .. } => Self::InvalidInput,
+            SyncplaneError::TargetUnavailable { .. } => Self::TargetUnavailable,
+            SyncplaneError::Conflict { .. } => Self::Conflict,
+            SyncplaneError::Security { .. } => Self::Security,
+            SyncplaneError::Operational { .. } | SyncplaneError::Io { .. } => Self::Operational,
         }
     }
 }

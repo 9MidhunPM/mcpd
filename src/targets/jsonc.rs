@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, path::Path};
 
 use serde_json::{Map, Value};
 
-use crate::diagnostics::{McpdError, Result};
+use crate::diagnostics::{Result, SyncplaneError};
 
 #[derive(Debug)]
 struct Property {
@@ -21,23 +21,23 @@ struct Edit {
 }
 
 pub fn parse(bytes: &[u8], label: &str, path: &Path) -> Result<(String, Value)> {
-    let source = std::str::from_utf8(bytes).map_err(|_| McpdError::InvalidInput {
+    let source = std::str::from_utf8(bytes).map_err(|_| SyncplaneError::InvalidInput {
         message: format!("{label} configuration {} is not UTF-8", path.display()),
-        hint: "repair the file; mcpd never overwrites non-UTF-8 target configuration".into(),
+        hint: "repair the file; syncplane never overwrites non-UTF-8 target configuration".into(),
     })?;
-    let sanitized = sanitize(source).map_err(|message| McpdError::InvalidInput {
+    let sanitized = sanitize(source).map_err(|message| SyncplaneError::InvalidInput {
         message: format!(
             "{label} configuration {} is malformed JSONC: {message}",
             path.display()
         ),
-        hint: "repair the file; mcpd never overwrites malformed target configuration".into(),
+        hint: "repair the file; syncplane never overwrites malformed target configuration".into(),
     })?;
-    let value = serde_json::from_str(&sanitized).map_err(|error| McpdError::InvalidInput {
+    let value = serde_json::from_str(&sanitized).map_err(|error| SyncplaneError::InvalidInput {
         message: format!(
             "{label} configuration {} is malformed JSONC: {error}",
             path.display()
         ),
-        hint: "repair the file; mcpd never overwrites malformed target configuration".into(),
+        hint: "repair the file; syncplane never overwrites malformed target configuration".into(),
     })?;
     Ok((source.to_owned(), value))
 }
@@ -80,14 +80,14 @@ pub fn patch_servers(
         for name in changed {
             let value = final_servers
                 .get(name)
-                .ok_or_else(|| McpdError::Operational {
+                .ok_or_else(|| SyncplaneError::Operational {
                     message: format!("rendered JSONC server `{name}` disappeared"),
-                    hint: "report this as an mcpd bug".into(),
+                    hint: "report this as a Syncplane bug".into(),
                 })?;
             let rendered =
-                serde_json::to_string(value).map_err(|error| McpdError::Operational {
+                serde_json::to_string(value).map_err(|error| SyncplaneError::Operational {
                     message: format!("could not serialize JSONC server `{name}`: {error}"),
-                    hint: "report this as an mcpd bug".into(),
+                    hint: "report this as a Syncplane bug".into(),
                 })?;
             if let Some(index) = by_name.get(name.as_str()) {
                 let property = &properties[*index];
@@ -161,9 +161,9 @@ pub fn patch_servers(
     }
     // Reparse before any filesystem write. This also catches edit bugs and duplicate keys.
     let reparsed = sanitize(&rendered).map_err(internal_jsonc_error)?;
-    serde_json::from_str::<Value>(&reparsed).map_err(|error| McpdError::Operational {
+    serde_json::from_str::<Value>(&reparsed).map_err(|error| SyncplaneError::Operational {
         message: format!("rendered JSONC did not validate: {error}"),
-        hint: "report this as an mcpd bug; no target file was modified".into(),
+        hint: "report this as a Syncplane bug; no target file was modified".into(),
     })?;
     Ok(rendered.into_bytes())
 }
@@ -179,7 +179,7 @@ fn locate_path(
             return Ok((object, Some(index)));
         };
         if source.as_bytes().get(property.value_start) != Some(&b'{') {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("JSONC path component `{key}` must be an object"),
                 hint: "repair the native MCP server collection before syncing".into(),
             });
@@ -266,15 +266,15 @@ fn object_properties(source: &str, object: (usize, usize)) -> Result<Vec<Propert
         let key_start = cursor;
         let key_end = string_end(bytes, cursor, end)?;
         let key: String = serde_json::from_str(&source[key_start..key_end]).map_err(|error| {
-            McpdError::InvalidInput {
+            SyncplaneError::InvalidInput {
                 message: format!("invalid JSONC object key: {error}"),
                 hint: "repair duplicate or malformed keys before syncing".into(),
             }
         })?;
         if seen.insert(key.clone(), ()).is_some() {
-            return Err(McpdError::InvalidInput {
+            return Err(SyncplaneError::InvalidInput {
                 message: format!("JSONC object contains duplicate key `{key}`"),
-                hint: "remove the duplicate key; mcpd will not guess which value to preserve"
+                hint: "remove the duplicate key; syncplane will not guess which value to preserve"
                     .into(),
             });
         }
@@ -462,10 +462,10 @@ fn sanitize(source: &str) -> std::result::Result<String, String> {
     String::from_utf8(output).map_err(|_| "configuration is not UTF-8".into())
 }
 
-fn internal_jsonc_error(message: String) -> McpdError {
-    McpdError::Operational {
+fn internal_jsonc_error(message: String) -> SyncplaneError {
+    SyncplaneError::Operational {
         message: format!("could not safely edit JSONC: {message}"),
-        hint: "report this as an mcpd bug; no target file was modified".into(),
+        hint: "report this as a Syncplane bug; no target file was modified".into(),
     }
 }
 

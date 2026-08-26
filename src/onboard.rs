@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::{
     Paths, adopt, config,
-    diagnostics::{McpdError, Result},
+    diagnostics::{Result, SyncplaneError},
     import,
     model::{CanonicalConfig, Server},
     sync,
@@ -81,7 +81,7 @@ pub fn import_all(
     if !requested_targets.is_empty() {
         for target in &requested_targets {
             if !adapters.iter().any(|adapter| adapter.id() == target) {
-                return Err(McpdError::TargetUnavailable {
+                return Err(SyncplaneError::TargetUnavailable {
                     target: target.clone(),
                     message: "no readable target configuration was found".into(),
                     hint: "install/configure the client first, or omit --target to scan available clients".into(),
@@ -157,11 +157,11 @@ pub fn import_all(
             eprint!("Choose a canonical definition, or press Enter to skip: ");
             io::stderr()
                 .flush()
-                .map_err(|source| McpdError::io("<terminal>", source))?;
+                .map_err(|source| SyncplaneError::io("<terminal>", source))?;
             let mut answer = String::new();
             io::stdin()
                 .read_line(&mut answer)
-                .map_err(|source| McpdError::io("<terminal>", source))?;
+                .map_err(|source| SyncplaneError::io("<terminal>", source))?;
             if let Ok(index) = answer.trim().parse::<usize>()
                 && let Some(source) = group.get(index.saturating_sub(1))
             {

@@ -1,0 +1,96 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import RegistrationMark from '../components/RegistrationMark.astro';
+import TerminalFrame from '../components/TerminalFrame.astro';
+
+const install = 'curl -fsSL https://syncplane.midhunpm.in/install.sh | sh';
+const status = [
+  '$ syncplane status',
+  'Overall: ✓ healthy — 1 canonical server(s), 5 enabled target(s)',
+  '| Target      | Status   | Managed | Unmanaged | Pending |',
+  '| Claude Code | ✓ synced | 1       | 0         | 0       |',
+  '| Cursor      | ✓ synced | 1       | 0         | 0       |',
+  '| Codex       | ✓ synced | 1       | 0         | 0       |',
+  '| Antigravity | ✓ synced | 1       | 0         | 0       |',
+  '| OpenCode    | ✓ synced | 1       | 0         | 0       |',
+];
+---
+<Base>
+  <!-- THESIS: one canonical MCP plate registers against five native client sheets; reject generic SaaS cards. OWN-WORLD: cool paper, black ink, CMYK registration color, rules, crop marks, and condensed display type. STORY: a multi-client developer sees safety as visible alignment, then installs or reads the guide. FIRST VIEWPORT: oversized headline left, registration mechanism right, primary install action beneath the proposition. FORM: Registration Press, approved A-hero/C-detail composition. -->
+  <Nav />
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="plate-label">A local configuration control plane</p>
+        <h1 id="hero-title">Configure MCP once.<br /><em>Use it everywhere.</em></h1>
+        <p class="hero-lede">Syncplane keeps one canonical MCP configuration and safely registers it with the AI clients you explicitly enable.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="/install/">Install Syncplane <span aria-hidden="true">→</span></a>
+          <a class="button button-plain" href="/docs/getting-started/">Read the 5-minute guide</a>
+        </div>
+        <p class="install-line"><code>{install}</code></p>
+      </div>
+      <div class="press-sheet" aria-label="One Syncplane canonical configuration aligned with five target clients">
+        <span class="crop crop-a"></span><span class="crop crop-b"></span><span class="crop crop-c"></span><span class="crop crop-d"></span>
+        <div class="canonical-plate"><RegistrationMark label="Canonical configuration" /><strong>CANONICAL<br />MCP<br />CONFIG</strong><small>source of truth</small></div>
+        <div class="target-plates" aria-hidden="true">
+          <span class="plate cyan">Claude</span><span class="plate magenta">Cursor</span><span class="plate yellow">Codex</span><span class="plate red">Antigravity</span><span class="plate black">OpenCode</span>
+        </div>
+        <p class="proof-stamp">5 native formats<br />1 deliberate sync</p>
+      </div>
+    </section>
+
+    <section class="manifesto" aria-labelledby="proof-title">
+      <p class="plate-label">The control plane, not another client</p>
+      <h2 id="proof-title">The configuration is yours.<br />The client formats are theirs.</h2>
+      <div class="proof-grid">
+        <p>Syncplane detects supported clients, but it manages none of them until you opt in. That distinction is intentional.</p>
+        <p>It records ownership outside target files, preserves entries it does not own, and previews changes before a write.</p>
+        <p>Secrets remain symbolic in canonical config and resolve only at the last safe moment for supported stdio servers.</p>
+      </div>
+    </section>
+
+    <section class="loupe-section" aria-labelledby="loupe-title">
+      <div class="loupe-copy">
+        <p class="plate-label">Proof before pressure</p>
+        <h2 id="loupe-title">Inspect the line.<br />Keep the margin.</h2>
+        <p>Dry runs are write-free. Sync uses target-local backups and atomic replacement. A malformed or ambiguous target fails closed, without turning unrelated settings into collateral damage.</p>
+        <a href="/docs/safety/" class="text-link">Read the safety model <span aria-hidden="true">→</span></a>
+      </div>
+      <div class="loupe-art" aria-hidden="true">
+        <div class="loupe-glass"><span>OWNED</span><strong>context7</strong><i>unchanged</i></div>
+        <div class="loupe-line line-one"></div><div class="loupe-line line-two"></div><div class="loupe-line line-three"></div>
+        <p>unmanaged entries<br />remain outside the plate</p>
+      </div>
+    </section>
+
+    <section class="workflow" aria-labelledby="workflow-title">
+      <div><p class="plate-label">A deliberate sequence</p><h2 id="workflow-title">From one definition<br />to the clients you trust.</h2></div>
+      <ol>
+        <li><span>01</span><div><h3>Define</h3><p>Create a canonical server definition. Keep environment and keyring references symbolic.</p></div></li>
+        <li><span>02</span><div><h3>Enable</h3><p>Choose the client targets Syncplane is allowed to manage. Detection alone changes nothing.</p></div></li>
+        <li><span>03</span><div><h3>Review</h3><p>Run a dry diff. Managed drift is visible; unmanaged entries stay informational.</p></div></li>
+        <li><span>04</span><div><h3>Register</h3><p>Sync writes each target atomically and updates ownership only after success.</p></div></li>
+      </ol>
+    </section>
+
+    <section class="terminal-section" aria-labelledby="terminal-title">
+      <div><p class="plate-label">An isolated release fixture</p><h2 id="terminal-title">Five clients.<br />No hand editing.</h2><p>The output below represents the exact state you should be able to inspect after an enabled, healthy sync.</p></div>
+      <TerminalFrame title="syncplane status" lines={status} />
+      <img class="sr-only" src="/images/isolated-sync-status.svg" alt="Terminal screenshot from an isolated Syncplane fixture showing one canonical server and five synchronized target clients." />
+    </section>
+
+    <section class="closing" aria-labelledby="closing-title">
+      <RegistrationMark />
+      <p class="plate-label">Ready to register</p>
+      <h2 id="closing-title">Your MCP environment<br />should be portable, not precious.</h2>
+      <div class="hero-actions"><a class="button button-primary" href="/install/">Install Syncplane <span aria-hidden="true">→</span></a><a class="button button-plain" href="https://github.com/9MidhunPM/syncplane">Inspect the source</a></div>
+    </section>
+  </main>
+  <Footer />
+  <script is:inline>
+    for (const element of document.querySelectorAll('[data-copy]')) element.addEventListener('click', () => navigator.clipboard.writeText(element.dataset.copy));
+  </script>
+</Base>
