@@ -6,6 +6,13 @@ import RegistrationMark from '../components/RegistrationMark.astro';
 import TerminalFrame from '../components/TerminalFrame.astro';
 
 const install = 'curl -fsSL https://syncplane.midhunpm.in/install.sh | sh';
+const targetPlates = [
+  { index: '01', name: 'Claude', scope: 'user + project', color: 'cyan' },
+  { index: '02', name: 'Cursor', scope: 'native JSON', color: 'magenta' },
+  { index: '03', name: 'Codex', scope: 'native TOML', color: 'yellow' },
+  { index: '04', name: 'Antigravity', scope: 'native JSON', color: 'red' },
+  { index: '05', name: 'OpenCode', scope: 'JSONC / JSON', color: 'black' },
+];
 const status = [
   '$ syncplane status',
   'Overall: ✓ healthy — 1 canonical server(s), 5 enabled target(s)',
@@ -31,14 +38,23 @@ const status = [
           <a class="button button-plain" href="/docs/getting-started/">Read the 5-minute guide</a>
         </div>
         <p class="install-line"><code>{install}</code></p>
+        <div class="hero-notes" aria-label="Syncplane principles">
+          <span><b>01</b> one source</span>
+          <span><b>02</b> explicit ownership</span>
+          <span><b>03</b> atomic writes</span>
+        </div>
       </div>
       <div class="press-sheet" aria-label="One Syncplane canonical configuration aligned with five target clients">
         <span class="crop crop-a"></span><span class="crop crop-b"></span><span class="crop crop-c"></span><span class="crop crop-d"></span>
+        <div class="sheet-topline"><span>SYNCPLANE / REGISTRATION 001</span><span>LOCAL / LINUX</span></div>
+        <div class="sheet-axis" aria-hidden="true"><span>source</span><span>five native targets</span></div>
         <div class="canonical-plate"><RegistrationMark label="Canonical configuration" /><strong>CANONICAL<br />MCP<br />CONFIG</strong><small>source of truth</small></div>
-        <div class="target-plates" aria-hidden="true">
-          <span class="plate cyan">Claude</span><span class="plate magenta">Cursor</span><span class="plate yellow">Codex</span><span class="plate red">Antigravity</span><span class="plate black">OpenCode</span>
+        <div class="sync-traces" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+        <div class="target-plates">
+          {targetPlates.map((target) => <span class={`plate ${target.color}`}><b>{target.index}</b><strong>{target.name}</strong><small>{target.scope}</small></span>)}
         </div>
-        <p class="proof-stamp">5 native formats<br />1 deliberate sync</p>
+        <p class="proof-stamp"><span>STATUS</span><strong>REGISTERED</strong><small>5 native formats<br />1 deliberate sync</small></p>
+        <div class="sheet-footer"><span>one source</span><b>×</b><span>five destinations</span></div>
       </div>
     </section>
 
