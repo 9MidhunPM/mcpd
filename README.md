@@ -4,6 +4,13 @@
 
 The Linux v1.0 implementation supports global and trusted project configuration, Codex, Claude Code, Cursor, Antigravity, and OpenCode. It includes stdio and Streamable HTTP servers, safe import and synchronization, JSONC-aware edits, OS-keyring secrets, runtime secret injection, declarative custom targets, discovery, watch mode, user-level systemd integration, and shell completions.
 
+> Configure MCP once. Use it everywhere.
+
+The project is built around one simple boundary: your canonical configuration is
+the source of truth, while each client keeps its own native file and behavior.
+Start with the [project overview](docs/overview.md) for the architecture and
+safety model, or continue below for the complete command reference.
+
 ## Scope
 
 `syncplane` is deliberately narrow: it is the safe configuration control plane for
@@ -195,6 +202,7 @@ See [PRD.md](PRD.md), [SECURITY.md](SECURITY.md), [packaging guidance](docs/pack
 
 ## Documentation
 
+- [Project overview](docs/overview.md) — the mental model, lifecycle, supported targets, and safety contract.
 - [Product requirements](PRD.md) — product scope, command behavior, and roadmap.
 - [Security policy](SECURITY.md) — reporting guidance and the v1 security boundary.
 - [Adapter development](docs/adapter-development.md) — responsibilities and fixture expectations for target adapters.
